@@ -1,0 +1,7 @@
+bin/
+obj/
+.git/
+.gitignore
+Dockerfile
+*.md
+firebase-service-account.json
