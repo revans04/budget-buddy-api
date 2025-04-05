@@ -280,70 +280,92 @@ namespace FamilyBudgetApi.Services
 
             var budget = await GetBudget(budgetId) ?? throw new Exception($"Budget {budgetId} not found");
             var importedDocs = await GetImportedTransactions(userId);
-            var batch = _firestoreDb.StartBatch();
-            var updatedDocs = new Dictionary<string, ImportedTransactionDoc>();
+            const int batchSize = 75; // Adjust based on testing
+            var requestBatches = requests.Select((req, index) => new { req, index })
+                                         .GroupBy(x => x.index / batchSize)
+                                         .Select(g => g.Select(x => x.req).ToList());
 
-            foreach (var req in requests)
+            foreach (var requestBatch in requestBatches)
             {
-                var txIndex = budget.Transactions.FindIndex(t => t.Id == req.Transaction.Id);
-                if (txIndex < 0) throw new Exception($"Transaction {req.Transaction.Id} not found in budget {budgetId}");
+                var batch = _firestoreDb.StartBatch();
+                var updatedDocs = new Dictionary<string, ImportedTransactionDoc>();
 
-                var existingTx = budget.Transactions[txIndex];
-                budget.Transactions[txIndex] = new Models.Transaction
+                foreach (var req in requestBatch)
                 {
-                    Id = existingTx.Id,
-                    Date = existingTx.Date,
-                    BudgetMonth = existingTx.BudgetMonth,
-                    Merchant = existingTx.Merchant,
-                    Categories = existingTx.Categories,
-                    Amount = existingTx.Amount,
-                    Notes = existingTx.Notes,
-                    Recurring = existingTx.Recurring,
-                    RecurringInterval = existingTx.RecurringInterval,
-                    UserId = existingTx.UserId,
-                    IsIncome = existingTx.IsIncome,
-                    AccountSource = req.Transaction.AccountSource ?? existingTx.AccountSource,
-                    AccountNumber = req.Transaction.AccountNumber ?? existingTx.AccountNumber,
-                    PostedDate = req.Transaction.PostedDate ?? existingTx.PostedDate,
-                    ImportedMerchant = req.Transaction.ImportedMerchant ?? existingTx.ImportedMerchant,
-                    Status = req.Transaction.Status ?? existingTx.Status,
-                    CheckNumber = existingTx.CheckNumber // Preserve if not sent
-                };
+                    var budgetTxIndex = budget.Transactions.FindIndex(t => t.Id == req.BudgetTransactionId);
+                    if (budgetTxIndex < 0) throw new Exception($"Budget transaction {req.BudgetTransactionId} not found in budget {budgetId}");
 
-                var targetDoc = importedDocs.FirstOrDefault(doc => doc.importedTransactions.Any(itx => itx.Id == req.ImportedTxId));
-                if (targetDoc == null)
-                {
-                    Console.WriteLine($"ImportedTransactionDoc not found for ImportedTxId: {req.ImportedTxId}");
-                    continue;
+                    var budgetTx = budget.Transactions[budgetTxIndex];
+                    if (req.Match)
+                    {
+                        var importedDoc = importedDocs.FirstOrDefault(doc => doc.importedTransactions.Any(itx => itx.Id == req.ImportedTransactionId));
+                        if (importedDoc == null) throw new Exception($"Imported transaction {req.ImportedTransactionId} not found");
+
+                        var importedTx = importedDoc.importedTransactions.First(itx => itx.Id == req.ImportedTransactionId);
+                        var updatedBudgetTx = new Models.Transaction();
+
+                        foreach (var prop in typeof(Models.Transaction).GetProperties())
+                        {
+                            if (prop.CanWrite) prop.SetValue(updatedBudgetTx, prop.GetValue(budgetTx));
+                        }
+
+                        var budgetTxProps = typeof(Models.Transaction).GetProperties().ToDictionary(p => p.Name);
+                        foreach (var importedProp in ImportedTransactionProperties)
+                        {
+                            var budgetProp = budgetTxProps.ContainsKey(importedProp.Name) ? budgetTxProps[importedProp.Name] : null;
+                            if (budgetProp != null && budgetProp.CanWrite)
+                            {
+                                var value = importedProp.GetValue(importedTx);
+                                if (value != null)
+                                {
+                                    if (importedProp.Name == "Payee" && budgetProp.Name == "ImportedMerchant")
+                                        budgetProp.SetValue(updatedBudgetTx, value);
+                                    else if (importedProp.Name == budgetProp.Name)
+                                        budgetProp.SetValue(updatedBudgetTx, value);
+                                }
+                            }
+                        }
+
+                        updatedBudgetTx.Status = "C";
+                        budget.Transactions[budgetTxIndex] = updatedBudgetTx;
+                    }
+
+                    var targetDoc = importedDocs.FirstOrDefault(doc => doc.importedTransactions.Any(itx => itx.Id == req.ImportedTransactionId));
+                    if (targetDoc == null)
+                    {
+                        Console.WriteLine($"ImportedTransactionDoc not found for ImportedTxId: {req.ImportedTransactionId}");
+                        continue;
+                    }
+
+                    var docId = targetDoc.DocumentId;
+                    if (!updatedDocs.ContainsKey(docId)) updatedDocs[docId] = targetDoc;
+
+                    var transactions = updatedDocs[docId].importedTransactions.ToList();
+                    var importedTxIdx = transactions.FindIndex(tx => tx.Id == req.ImportedTransactionId);
+                    if (importedTxIdx == -1)
+                    {
+                        Console.WriteLine($"ImportedTransaction {req.ImportedTransactionId} not found in document {docId}");
+                        continue;
+                    }
+
+                    var existingImportedTx = transactions[importedTxIdx];
+                    var updatedTransaction = new ImportedTransaction();
+                    foreach (var prop in ImportedTransactionProperties)
+                    {
+                        if (prop.CanWrite) prop.SetValue(updatedTransaction, prop.GetValue(existingImportedTx));
+                    }
+                    if (req.Match) updatedTransaction.Matched = true;
+                    if (req.Ignore) updatedTransaction.Ignored = true;
+
+                    transactions[importedTxIdx] = updatedTransaction;
+                    updatedDocs[docId].importedTransactions = transactions.ToArray();
+                    batch.Set(_firestoreDb.Collection("importedTransactions").Document(docId), new { importedTransactions = transactions }, SetOptions.MergeAll);
                 }
 
-                var docId = targetDoc.DocumentId;
-                if (!updatedDocs.ContainsKey(docId)) updatedDocs[docId] = targetDoc;
-
-                var transactions = updatedDocs[docId].importedTransactions.ToList();
-                var txIdx = transactions.FindIndex(tx => tx.Id == req.ImportedTxId);
-                if (txIdx == -1)
-                {
-                    Console.WriteLine($"ImportedTransaction {req.ImportedTxId} not found in document {docId}");
-                    continue;
-                }
-
-                var existingImportedTx = transactions[txIdx];
-                var updatedTransaction = new ImportedTransaction();
-                foreach (var prop in ImportedTransactionProperties)
-                {
-                    if (prop.CanWrite) prop.SetValue(updatedTransaction, prop.GetValue(existingImportedTx));
-                }
-                updatedTransaction.Matched = true;
-
-                transactions[txIdx] = updatedTransaction;
-                updatedDocs[docId].importedTransactions = transactions.ToArray();
-                batch.Set(_firestoreDb.Collection("importedTransactions").Document(docId), new { importedTransactions = transactions }, SetOptions.MergeAll);
+                if (updatedDocs.Any()) await batch.CommitAsync();
             }
 
-            if (updatedDocs.Any()) await batch.CommitAsync();
             await SaveBudget(budgetId, budget, userId, userEmail);
-
             Console.WriteLine($"Batch reconcile completed in {(DateTime.UtcNow - startTime).TotalMilliseconds}ms");
         }
 

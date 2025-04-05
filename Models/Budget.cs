@@ -141,8 +141,16 @@ namespace FamilyBudgetApi.Models
     }
 
     public class ReconcileRequest
-    {
-        public Transaction Transaction { get; set; }
-        public string ImportedTxId { get; set; }
-    }
+{
+    public string BudgetTransactionId { get; set; }
+    public string ImportedTransactionId { get; set; }
+    public bool Match { get; set; }
+    public bool Ignore { get; set; }
+}
+
+public class BatchReconcileRequest
+{
+    public string BudgetId { get; set; }
+    public List<ReconcileRequest> Reconciliations { get; set; }
+}
 }

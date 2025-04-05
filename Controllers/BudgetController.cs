@@ -226,20 +226,20 @@ namespace FamilyBudgetApi.Controllers
 
     [HttpPost("{budgetId}/batch-reconcile")]
     [AuthorizeFirebase]
-    public async Task<IActionResult> BatchReconcileTransactions(string budgetId, [FromBody] List<ReconcileRequest> requests)
+    public async Task<IActionResult> BatchReconcileTransactions(string budgetId, [FromBody] BatchReconcileRequest request)
     {
       try
       {
         var userId = HttpContext.Items["UserId"]?.ToString() ?? throw new Exception("User ID not found");
         var userEmail = (await FirebaseAuth.DefaultInstance.GetUserAsync(userId)).Email;
-
-        await _budgetService.BatchReconcileTransactions(budgetId, requests, userId, userEmail);
+        if (request.BudgetId != budgetId) throw new Exception("BudgetId in payload does not match URL");
+        await _budgetService.BatchReconcileTransactions(budgetId, request.Reconciliations, userId, userEmail);
         return Ok();
       }
       catch (Exception ex)
       {
         Console.WriteLine($"Error in BatchReconcileTransactions: {ex.Message}\nStack Trace: {ex.StackTrace}");
-        return BadRequest(ex.Message); // Return the error message to the client for debugging
+        return BadRequest(ex.Message);
       }
     }
 
