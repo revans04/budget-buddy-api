@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("family-budget-api")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+dccaf77667b31f8c65bbab84c6cd0f3e51932973")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+5be25226780b1b9658236c6fe29987aec2adf595")]
 [assembly: System.Reflection.AssemblyProductAttribute("family-budget-api")]
 [assembly: System.Reflection.AssemblyTitleAttribute("family-budget-api")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -1,78 +1,81 @@
 
 using Microsoft.AspNetCore.Mvc;
 using FamilyBudgetApi.Services;
+using FamilyBudgetApi.Models;
 
-namespace FamilyBudgetApi.Controllers;
-
-[ApiController]
-[Route("api/user")]
-public class UserController : ControllerBase
+namespace FamilyBudgetApi.Controllers
 {
-    private readonly UserService _userService;
 
-    public UserController(UserService userService)
+    [ApiController]
+    [Route("api/user")]
+    public class UserController : ControllerBase
     {
-        _userService = userService;
-    }
+        private readonly UserService _userService;
 
-    [HttpGet("ping")]
-    public async Task<IActionResult> Ping()
-    {
-        var response = new
+        public UserController(UserService userService)
         {
-            Message = "pong",
-            DateTime = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        };
-        return Ok(response);
-    }
+            _userService = userService;
+        }
 
-    [HttpGet("{userId}")]
-    [AuthorizeFirebase]
-    public async Task<IActionResult> GetUser(string userId)
-    {
-        try
+        [HttpGet("ping")]
+        public async Task<IActionResult> Ping()
         {
-            var user = await _userService.GetUser(userId);
-            if (user == null) return NotFound();
-            return Ok(user);
+            var response = new
+            {
+                Message = "pong",
+                DateTime = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+            };
+            return Ok(response);
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error in GetUser: {ex.Message}");
-            return BadRequest(ex.Message);
-        }
-    }
 
-    [HttpGet("by-email/{email}")]
-    [AuthorizeFirebase]
-    public async Task<IActionResult> GetUserByEmail(string email)
-    {
-        try
+        [HttpGet("{userId}")]
+        [AuthorizeFirebase]
+        public async Task<IActionResult> GetUser(string userId)
         {
-            var user = await _userService.GetUserByEmail(email);
-            if (user == null) return NotFound();
-            return Ok(user);
+            try
+            {
+                var user = await _userService.GetUser(userId);
+                if (user == null) return NotFound();
+                return Ok(user);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in GetUser: {ex.Message}");
+                return BadRequest(ex.Message);
+            }
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error in GetUserByEmail: {ex.Message}");
-            return BadRequest(ex.Message);
-        }
-    }
 
-    [HttpPost("{userId}")]
-    [AuthorizeFirebase]
-    public async Task<IActionResult> SaveUser(string userId, [FromBody] UserData userData)
-    {
-        try
+        [HttpGet("by-email/{email}")]
+        [AuthorizeFirebase]
+        public async Task<IActionResult> GetUserByEmail(string email)
         {
-            await _userService.SaveUser(userId, userData);
-            return Ok();
+            try
+            {
+                var user = await _userService.GetUserByEmail(email);
+                if (user == null) return NotFound();
+                return Ok(user);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in GetUserByEmail: {ex.Message}");
+                return BadRequest(ex.Message);
+            }
         }
-        catch (Exception ex)
+
+        [HttpPost("{userId}")]
+        [AuthorizeFirebase]
+        public async Task<IActionResult> SaveUser(string userId, [FromBody] UserData userData)
         {
-            Console.WriteLine($"Error in SaveUser: {ex.Message}");
-            return BadRequest(ex.Message);
+            try
+            {
+                await _userService.SaveUser(userId, userData);
+                return Ok();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in SaveUser: {ex.Message}");
+                return BadRequest(ex.Message);
+            }
         }
     }
 }

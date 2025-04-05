@@ -1,427 +1,352 @@
+//Services/BudgetService.cs
 using Google.Cloud.Firestore;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
+using FamilyBudgetApi.Models;
+using System.Reflection;
 
-namespace FamilyBudgetApi.Services;
-
-public class BudgetService
+namespace FamilyBudgetApi.Services
 {
-    private readonly FirestoreDb _db;
 
-    public BudgetService(FirestoreDb db)
+    public class BudgetService
     {
-        _db = db;
-    }
+        private readonly FirestoreDb _firestoreDb;
+        private readonly FamilyService _familyService;
+        private static readonly PropertyInfo[] ImportedTransactionProperties = typeof(ImportedTransaction).GetProperties();
 
-    public async Task<List<BudgetInfo>> LoadAccessibleBudgets(string userId)
-    {
-        if (string.IsNullOrEmpty(userId)) throw new ArgumentException("User ID is required");
-        var budgets = new List<BudgetInfo>();
-        var sharedBudgets = await GetSharedBudgets(userId);
-        foreach (var shared in sharedBudgets)
+
+        public BudgetService(FirestoreDb firestoreDb, FamilyService familyService)
         {
-            foreach (var budgetId in shared.BudgetIds)
-            {
-                var month = budgetId.Split("_")[1];
-                var budget = await GetBudget(budgetId);
-                if (budget != null)
+            _firestoreDb = firestoreDb;
+            _familyService = familyService;
+        }
+
+        public async Task<List<BudgetInfo>> LoadAccessibleBudgets(string userId)
+        {
+            var family = await _familyService.GetUserFamily(userId);
+            if (family == null) return new List<BudgetInfo>();
+
+            var budgetsQuery = await _firestoreDb.Collection("budgets")
+                .WhereEqualTo("familyId", family.Id)
+                .GetSnapshotAsync();
+
+            var budgets = budgetsQuery.Documents
+                .Select(doc =>
                 {
-                    budgets.Add(new BudgetInfo
-                    {
-                        BudgetId = budgetId,
-                        IsOwner = false,
-                        UserId = shared.OwnerUid,
-                        Label = $"Shared Budget ({month})",
-                        Month = month,
-                        IncomeTarget = budget.IncomeTarget,
-                        Categories = budget.Categories,
-                        Transactions = budget.Transactions,
-                        SharedWith = budget.SharedWith,
-                        SharedWithUids = budget.SharedWithUids,
-                        OriginalBudgetId = budget.OriginalBudgetId,
-                        Merchants = budget.Merchants
-                    });
+                    var budget = doc.ConvertTo<BudgetInfo>();
+                    budget.BudgetId = doc.Id; // Set BudgetId here
+                    budget.IsOwner = family.OwnerUid == userId; // Set IsOwner here
+                    return budget;
+                })
+                .ToList();
+
+            return budgets;
+        }
+
+        public async Task<Budget?> GetBudget(string budgetId)
+        {
+            var budgetRef = _firestoreDb.Collection("budgets").Document(budgetId);
+            try
+            {
+                var budgetSnap = await budgetRef.GetSnapshotAsync();
+                if (!budgetSnap.Exists) return null;
+
+                return budgetSnap.ConvertTo<Budget>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in GetBudget: {ex.Message}");
+                return null;
+            }
+        }
+
+        public async Task<List<SharedBudget>> GetSharedBudgets(string userId)
+        {
+            var q = _firestoreDb.Collection("sharedBudgets").WhereEqualTo("userId", userId);
+            var snapshot = await q.GetSnapshotAsync();
+            return snapshot.Documents.Select(doc => doc.ConvertTo<SharedBudget>()).ToList();
+        }
+
+        public async Task SaveBudget(string budgetId, Budget budget, string userId, string userEmail)
+        {
+            var familyQuery = _firestoreDb.Collection("families")
+                .WhereArrayContains("memberUids", userId)
+                .WhereEqualTo("id", budget.FamilyId);
+            if (!(await familyQuery.GetSnapshotAsync()).Any())
+                throw new Exception("User not part of this family");
+            await _firestoreDb.Collection("budgets").Document(budgetId).SetAsync(budget, SetOptions.MergeAll);
+            await LogEditEvent(budgetId, userId, userEmail, "update_budget"); // Add action parameter if needed
+        }
+
+        public async Task<List<EditEvent>> GetEditHistory(string budgetId, DateTime since)
+        {
+            var editHistoryRef = _firestoreDb.Collection("budgets").Document(budgetId).Collection("editHistory");
+            var query = editHistoryRef.WhereGreaterThanOrEqualTo("timestamp", Timestamp.FromDateTime(since.ToUniversalTime()));
+            var snapshot = await query.GetSnapshotAsync();
+            return snapshot.Documents.Select(doc => doc.ConvertTo<EditEvent>()).ToList();
+        }
+
+        public async Task AddTransaction(string budgetId, Models.Transaction transaction, string userId, string userEmail)
+        {
+            var budget = await GetBudget(budgetId) ?? throw new Exception($"Budget {budgetId} not found");
+            transaction.Id ??= _firestoreDb.Collection("budgets").Document().Id;
+            budget.Transactions.Add(transaction);
+            if (!string.IsNullOrEmpty(transaction.Merchant))
+            {
+                Console.WriteLine($"Adding merchant {transaction.Merchant} for budget {budgetId}");
+                await UpdateMerchants(budgetId, transaction.Merchant, 1);
+            }
+            await SaveBudget(budgetId, budget, userId, userEmail.Replace("update_budget", "add_transaction"));
+        }
+
+        public async Task SaveTransaction(string budgetId, Models.Transaction transaction, string userId, string userEmail)
+        {
+            var budget = await GetBudget(budgetId) ?? throw new Exception($"Budget {budgetId} not found");
+            var index = budget.Transactions.FindIndex(t => t.Id == transaction.Id);
+            string? oldMerchant = null;
+            if (index >= 0)
+            {
+                oldMerchant = budget.Transactions[index].Merchant;
+                budget.Transactions[index] = transaction;
+            }
+            else
+            {
+                transaction.Id ??= _firestoreDb.Collection("budgets").Document().Id;
+                budget.Transactions.Add(transaction);
+            }
+
+            if (!string.IsNullOrEmpty(oldMerchant) && oldMerchant != transaction.Merchant)
+            {
+                Console.WriteLine($"Decreasing count for old merchant {oldMerchant} in budget {budgetId}");
+                await UpdateMerchants(budgetId, oldMerchant, -1);
+            }
+            if (!string.IsNullOrEmpty(transaction.Merchant) && (oldMerchant == null || oldMerchant != transaction.Merchant))
+            {
+                Console.WriteLine($"Increasing count for new merchant {transaction.Merchant} in budget {budgetId}");
+                await UpdateMerchants(budgetId, transaction.Merchant, 1);
+            }
+
+            await SaveBudget(budgetId, budget, userId, userEmail.Replace("update_budget", transaction.Id != null ? "update_transaction" : "add_transaction"));
+        }
+
+        public async Task DeleteTransaction(string budgetId, string transactionId, string userId, string userEmail)
+        {
+            var budget = await GetBudget(budgetId) ?? throw new Exception($"Budget {budgetId} not found");
+            var transaction = budget.Transactions.FirstOrDefault(t => t.Id == transactionId) ?? throw new Exception($"Transaction {transactionId} not found");
+            budget.Transactions.Remove(transaction);
+            if (!string.IsNullOrEmpty(transaction.Merchant)) await UpdateMerchants(budgetId, transaction.Merchant, -1);
+            await SaveBudget(budgetId, budget, userId, userEmail.Replace("update_budget", "delete_transaction"));
+        }
+
+        private async Task UpdateMerchants(string budgetId, string merchantName, int increment)
+        {
+            var budgetRef = _firestoreDb.Collection("budgets").Document(budgetId);
+            var budgetSnap = await budgetRef.GetSnapshotAsync();
+            if (!budgetSnap.Exists) throw new Exception($"Budget {budgetId} not found");
+
+            var budget = budgetSnap.ConvertTo<Budget>();
+            if (budget.Merchants == null) // Initialize if null
+            {
+                budget.Merchants = new List<Merchant>();
+                Console.WriteLine($"Initialized Merchants list for budget {budgetId}");
+            }
+
+            var merchant = budget.Merchants.FirstOrDefault(m => m.Name == merchantName);
+            if (merchant != null)
+            {
+                merchant.UsageCount += increment;
+                Console.WriteLine($"Updated {merchantName} count to {merchant.UsageCount}");
+                if (merchant.UsageCount <= 0)
+                {
+                    budget.Merchants.Remove(merchant);
+                    Console.WriteLine($"Removed {merchantName} from budget {budgetId}");
                 }
             }
+            else if (increment > 0)
+            {
+                budget.Merchants.Add(new Merchant { Name = merchantName, UsageCount = increment });
+                Console.WriteLine($"Added {merchantName} with count {increment} to budget {budgetId}");
+            }
+            budget.Merchants.Sort((a, b) => b.UsageCount.CompareTo(a.UsageCount));
+            await budgetRef.SetAsync(budget, SetOptions.MergeAll);
         }
 
-        var budgetsQuery = _db.Collection("budgets").WhereEqualTo("userId", userId);
-        var querySnapshot = await budgetsQuery.GetSnapshotAsync();
-        foreach (var doc in querySnapshot.Documents)
+        private async Task LogEditEvent(string budgetId, string userId, string userEmail, string action)
         {
-            var budget = await GetBudget(doc.Id);
-            if (budget != null)
+            var editEventRef = _firestoreDb.Collection("budgets").Document(budgetId).Collection("editHistory").Document();
+            await editEventRef.SetAsync(new EditEvent
             {
-                var month = doc.Id.Split("_")[1];
-                budgets.Add(new BudgetInfo
+                UserId = userId ?? "",
+                UserEmail = userEmail ?? "",
+                Timestamp = DateTime.UtcNow,
+                Action = action ?? ""
+            });
+        }
+
+        public async Task<string> SaveImportedTransactions(string userId, ImportedTransactionDoc doc)
+        {
+            var docRef = _firestoreDb.Collection("importedTransactions").Document(doc.DocumentId);
+            doc.UserId = userId; // Ensure userId is set
+            doc.DocId = doc.DocumentId; // Ensure DocId matches DocumentId
+            await docRef.SetAsync(doc, SetOptions.Overwrite);
+            return doc.DocumentId;
+        }
+
+
+        public async Task<List<ImportedTransactionDoc>> GetImportedTransactions(string userId)
+        {
+            var family = await _familyService.GetUserFamily(userId);
+            if (family == null) return new List<ImportedTransactionDoc>();
+
+            var importedDocs = await _firestoreDb.Collection("importedTransactions")
+                .WhereEqualTo("familyId", family.Id)
+                .GetSnapshotAsync();
+
+            return importedDocs.Documents
+                .Select(doc =>
                 {
-                    BudgetId = doc.Id,
-                    IsOwner = true,
-                    UserId = userId,
-                    Label = $"My Budget ({month})",
-                    Month = month,
-                    IncomeTarget = budget.IncomeTarget,
-                    Categories = budget.Categories,
-                    Transactions = budget.Transactions,
-                    SharedWith = budget.SharedWith,
-                    SharedWithUids = budget.SharedWithUids,
-                    OriginalBudgetId = budget.OriginalBudgetId,
-                    Merchants = budget.Merchants
-                });
+                    var importedDoc = doc.ConvertTo<ImportedTransactionDoc>();
+                    importedDoc.DocumentId = doc.Id; // Set the Firestore document ID
+                    return importedDoc;
+                })
+                .ToList();
+        }
+
+        public async Task UpdateImportedTransaction(string docId, string transactionId, bool? matched = null, bool? ignored = null)
+        {
+            var docRef = _firestoreDb.Collection("importedTransactions").Document(docId);
+            var snapshot = await docRef.GetSnapshotAsync();
+            if (!snapshot.Exists) throw new Exception($"Imported transaction document {docId} not found");
+
+            var docData = snapshot.ConvertTo<ImportedTransactionDoc>();
+            var transactions = docData.importedTransactions.ToList();
+            var index = transactions.FindIndex(tx => tx.Id == transactionId);
+            if (index == -1) throw new Exception($"Imported transaction {transactionId} not found in document {docId}");
+
+            var existingTransaction = transactions[index];
+            var updatedTransaction = new ImportedTransaction();
+
+            // Use cached PropertyInfo to copy all properties from the existing transaction
+            foreach (var prop in ImportedTransactionProperties)
+            {
+                if (prop.CanWrite)
+                {
+                    var value = prop.GetValue(existingTransaction);
+                    prop.SetValue(updatedTransaction, value);
+                }
+            }
+
+            // Update the specified fields
+            if (matched.HasValue)
+            {
+                updatedTransaction.Matched = matched.Value;
+            }
+            if (ignored.HasValue)
+            {
+                updatedTransaction.Ignored = ignored.Value;
+            }
+
+            transactions[index] = updatedTransaction;
+            await docRef.SetAsync(new { importedTransactions = transactions }, SetOptions.MergeAll);
+        }
+
+        public async Task<List<ImportedTransactionDoc>> GetImportedTransactionDocs(string userId)
+        {
+            var q = _firestoreDb.Collection("importedTransactions").WhereEqualTo("userId", userId);
+            var snapshot = await q.GetSnapshotAsync();
+            return snapshot.Documents.Select(doc => doc.ConvertTo<ImportedTransactionDoc>()).ToList();
+        }
+
+        public async Task UpdateSharedBudgets(string ownerUid, string sharedUid, List<string> newBudgetIds)
+        {
+            var q = _firestoreDb.Collection("sharedBudgets").WhereEqualTo("userId", sharedUid).WhereEqualTo("ownerUid", ownerUid);
+            var snapshot = await q.GetSnapshotAsync();
+            if (snapshot.Count == 0)
+            {
+                var docRef = _firestoreDb.Collection("sharedBudgets").Document();
+                await docRef.SetAsync(new SharedBudget { UserId = sharedUid, OwnerUid = ownerUid, BudgetIds = newBudgetIds }, SetOptions.Overwrite);
+            }
+            else
+            {
+                var docRef = snapshot.Documents[0].Reference;
+                var doc = snapshot.Documents[0].ConvertTo<SharedBudget>();
+                doc.BudgetIds = doc.BudgetIds.Union(newBudgetIds).Distinct().ToList();
+                await docRef.SetAsync(doc, SetOptions.MergeAll);
             }
         }
 
-        return budgets;
-    }
-
-    public async Task<Budget?> GetBudget(string budgetId)
-    {
-        var budgetRef = _db.Collection("budgets").Document(budgetId);
-        try
+        public async Task BatchReconcileTransactions(string budgetId, List<ReconcileRequest> requests, string userId, string userEmail)
         {
-            var budgetSnap = await budgetRef.GetSnapshotAsync();
-            if (!budgetSnap.Exists) return null;
+            var startTime = DateTime.UtcNow;
+            Console.WriteLine($"Starting batch reconcile for {requests.Count} transactions");
 
-            return budgetSnap.ConvertTo<Budget>();
+            var budget = await GetBudget(budgetId) ?? throw new Exception($"Budget {budgetId} not found");
+            var importedDocs = await GetImportedTransactions(userId);
+            var batch = _firestoreDb.StartBatch();
+            var updatedDocs = new Dictionary<string, ImportedTransactionDoc>();
+
+            foreach (var req in requests)
+            {
+                var txIndex = budget.Transactions.FindIndex(t => t.Id == req.Transaction.Id);
+                if (txIndex < 0) throw new Exception($"Transaction {req.Transaction.Id} not found in budget {budgetId}");
+
+                var existingTx = budget.Transactions[txIndex];
+                budget.Transactions[txIndex] = new Models.Transaction
+                {
+                    Id = existingTx.Id,
+                    Date = existingTx.Date,
+                    BudgetMonth = existingTx.BudgetMonth,
+                    Merchant = existingTx.Merchant,
+                    Categories = existingTx.Categories,
+                    Amount = existingTx.Amount,
+                    Notes = existingTx.Notes,
+                    Recurring = existingTx.Recurring,
+                    RecurringInterval = existingTx.RecurringInterval,
+                    UserId = existingTx.UserId,
+                    IsIncome = existingTx.IsIncome,
+                    AccountSource = req.Transaction.AccountSource ?? existingTx.AccountSource,
+                    AccountNumber = req.Transaction.AccountNumber ?? existingTx.AccountNumber,
+                    PostedDate = req.Transaction.PostedDate ?? existingTx.PostedDate,
+                    ImportedMerchant = req.Transaction.ImportedMerchant ?? existingTx.ImportedMerchant,
+                    Status = req.Transaction.Status ?? existingTx.Status,
+                    CheckNumber = existingTx.CheckNumber // Preserve if not sent
+                };
+
+                var targetDoc = importedDocs.FirstOrDefault(doc => doc.importedTransactions.Any(itx => itx.Id == req.ImportedTxId));
+                if (targetDoc == null)
+                {
+                    Console.WriteLine($"ImportedTransactionDoc not found for ImportedTxId: {req.ImportedTxId}");
+                    continue;
+                }
+
+                var docId = targetDoc.DocumentId;
+                if (!updatedDocs.ContainsKey(docId)) updatedDocs[docId] = targetDoc;
+
+                var transactions = updatedDocs[docId].importedTransactions.ToList();
+                var txIdx = transactions.FindIndex(tx => tx.Id == req.ImportedTxId);
+                if (txIdx == -1)
+                {
+                    Console.WriteLine($"ImportedTransaction {req.ImportedTxId} not found in document {docId}");
+                    continue;
+                }
+
+                var existingImportedTx = transactions[txIdx];
+                var updatedTransaction = new ImportedTransaction();
+                foreach (var prop in ImportedTransactionProperties)
+                {
+                    if (prop.CanWrite) prop.SetValue(updatedTransaction, prop.GetValue(existingImportedTx));
+                }
+                updatedTransaction.Matched = true;
+
+                transactions[txIdx] = updatedTransaction;
+                updatedDocs[docId].importedTransactions = transactions.ToArray();
+                batch.Set(_firestoreDb.Collection("importedTransactions").Document(docId), new { importedTransactions = transactions }, SetOptions.MergeAll);
+            }
+
+            if (updatedDocs.Any()) await batch.CommitAsync();
+            await SaveBudget(budgetId, budget, userId, userEmail);
+
+            Console.WriteLine($"Batch reconcile completed in {(DateTime.UtcNow - startTime).TotalMilliseconds}ms");
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error in GetBudget: {ex.Message}");
-            return null;
-        }
+
     }
 
-    public async Task<List<SharedBudget>> GetSharedBudgets(string userId)
-    {
-        var q = _db.Collection("sharedBudgets").WhereEqualTo("userId", userId);
-        var snapshot = await q.GetSnapshotAsync();
-        return snapshot.Documents.Select(doc => doc.ConvertTo<SharedBudget>()).ToList();
-    }
-
-    public async Task SaveBudget(string budgetId, Budget budget, string userId, string userEmail)
-    {
-        var budgetRef = _db.Collection("budgets").Document(budgetId);
-        await budgetRef.SetAsync(budget, SetOptions.MergeAll);
-        await LogEditEvent(budgetId, userId, userEmail, "update_budget");
-    }
-
-    public async Task<List<EditEvent>> GetEditHistory(string budgetId, DateTime since)
-    {
-        var editHistoryRef = _db.Collection("budgets").Document(budgetId).Collection("editHistory");
-        var query = editHistoryRef.WhereGreaterThanOrEqualTo("timestamp", Timestamp.FromDateTime(since.ToUniversalTime()));
-        var snapshot = await query.GetSnapshotAsync();
-        return snapshot.Documents.Select(doc => doc.ConvertTo<EditEvent>()).ToList();
-    }
-
-    public async Task AddTransaction(string budgetId, Transaction transaction, string userId, string userEmail)
-    {
-        var budget = await GetBudget(budgetId) ?? throw new Exception($"Budget {budgetId} not found");
-        transaction.Id ??= _db.Collection("budgets").Document().Id;
-        budget.Transactions.Add(transaction);
-        if (!string.IsNullOrEmpty(transaction.Merchant)) await UpdateMerchants(budgetId, transaction.Merchant, 1);
-        await SaveBudget(budgetId, budget, userId, userEmail.Replace("update_budget", "add_transaction"));
-    }
-
-    public async Task SaveTransaction(string budgetId, Transaction transaction, string userId, string userEmail)
-    {
-        var budget = await GetBudget(budgetId) ?? throw new Exception($"Budget {budgetId} not found");
-        var index = budget.Transactions.FindIndex(t => t.Id == transaction.Id);
-        string? oldMerchant = null;
-        if (index >= 0)
-        {
-            oldMerchant = budget.Transactions[index].Merchant;
-            budget.Transactions[index] = transaction;
-        }
-        else
-        {
-            transaction.Id ??= _db.Collection("budgets").Document().Id;
-            budget.Transactions.Add(transaction);
-        }
-
-        if (!string.IsNullOrEmpty(oldMerchant) && oldMerchant != transaction.Merchant)
-            await UpdateMerchants(budgetId, oldMerchant, -1);
-        if (!string.IsNullOrEmpty(transaction.Merchant) && (oldMerchant == null || oldMerchant != transaction.Merchant))
-            await UpdateMerchants(budgetId, transaction.Merchant, 1);
-
-        await SaveBudget(budgetId, budget, userId, userEmail.Replace("update_budget", transaction.Id != null ? "update_transaction" : "add_transaction"));
-    }
-
-    public async Task DeleteTransaction(string budgetId, string transactionId, string userId, string userEmail)
-    {
-        var budget = await GetBudget(budgetId) ?? throw new Exception($"Budget {budgetId} not found");
-        var transaction = budget.Transactions.FirstOrDefault(t => t.Id == transactionId) ?? throw new Exception($"Transaction {transactionId} not found");
-        budget.Transactions.Remove(transaction);
-        if (!string.IsNullOrEmpty(transaction.Merchant)) await UpdateMerchants(budgetId, transaction.Merchant, -1);
-        await SaveBudget(budgetId, budget, userId, userEmail.Replace("update_budget", "delete_transaction"));
-    }
-
-    private async Task UpdateMerchants(string budgetId, string merchantName, int increment)
-    {
-        var budgetRef = _db.Collection("budgets").Document(budgetId);
-        var budgetSnap = await budgetRef.GetSnapshotAsync();
-        if (!budgetSnap.Exists) throw new Exception($"Budget {budgetId} not found");
-
-        var budget = budgetSnap.ConvertTo<Budget>();
-        var merchant = budget.Merchants.FirstOrDefault(m => m.Name == merchantName);
-        if (merchant != null)
-        {
-            merchant.UsageCount += increment;
-            if (merchant.UsageCount <= 0) budget.Merchants.Remove(merchant);
-        }
-        else if (increment > 0)
-        {
-            budget.Merchants.Add(new Merchant { Name = merchantName, UsageCount = increment });
-        }
-        budget.Merchants.Sort((a, b) => b.UsageCount.CompareTo(a.UsageCount));
-        await budgetRef.SetAsync(budget, SetOptions.MergeAll);
-    }
-
-    private async Task LogEditEvent(string budgetId, string userId, string userEmail, string action)
-    {
-        var editEventRef = _db.Collection("budgets").Document(budgetId).Collection("editHistory").Document();
-        await editEventRef.SetAsync(new EditEvent
-        {
-            UserId = userId ?? "",
-            UserEmail = userEmail ?? "",
-            Timestamp = DateTime.UtcNow,
-            Action = action ?? ""
-        });
-    }
-
-    public async Task<string> SaveImportedTransactions(string userId, ImportedTransactionDoc doc)
-    {
-        var docRef = _db.Collection("importedTransactions").Document();
-        doc.UserId = userId; // Ensure userId is set
-        await docRef.SetAsync(doc, SetOptions.Overwrite);
-        return docRef.Id;
-    }
-
-    public async Task UpdateImportedTransaction(string docId, string transactionId, ImportedTransaction updates)
-    {
-        var docRef = _db.Collection("importedTransactions").Document(docId);
-        var docSnap = await docRef.GetSnapshotAsync();
-        if (!docSnap.Exists) throw new Exception($"Imported transaction doc {docId} not found");
-
-        var doc = docSnap.ConvertTo<ImportedTransactionDoc>();
-        var tx = doc.ImportedTransactions.FirstOrDefault(t => t.Id == transactionId) ?? throw new Exception($"Imported transaction {transactionId} not found");
-
-        tx.AccountNumber = updates.AccountNumber ?? tx.AccountNumber;
-        tx.AccountSource = updates.AccountSource ?? tx.AccountSource;
-        tx.Payee = updates.Payee ?? tx.Payee;
-        tx.PostedDate = updates.PostedDate ?? tx.PostedDate;
-        tx.Amount = updates.Amount != 0 ? updates.Amount : tx.Amount;
-        tx.Status = updates.Status ?? tx.Status;
-        tx.Matched = updates.Matched != tx.Matched ? updates.Matched : tx.Matched;
-        tx.Ignored = updates.Ignored != tx.Ignored ? updates.Ignored : tx.Ignored;
-        tx.DebitAmount = updates.DebitAmount ?? tx.DebitAmount;
-        tx.CreditAmount = updates.CreditAmount ?? tx.CreditAmount;
-
-        await docRef.SetAsync(doc, SetOptions.MergeAll);
-    }
-
-    public async Task<List<ImportedTransactionDoc>> GetImportedTransactionDocs(string userId)
-    {
-        var q = _db.Collection("importedTransactions").WhereEqualTo("userId", userId);
-        var snapshot = await q.GetSnapshotAsync();
-        return snapshot.Documents.Select(doc => doc.ConvertTo<ImportedTransactionDoc>()).ToList();
-    }
-
-    public async Task UpdateSharedBudgets(string ownerUid, string sharedUid, List<string> newBudgetIds)
-    {
-        var q = _db.Collection("sharedBudgets").WhereEqualTo("userId", sharedUid).WhereEqualTo("ownerUid", ownerUid);
-        var snapshot = await q.GetSnapshotAsync();
-        if (snapshot.Count == 0)
-        {
-            var docRef = _db.Collection("sharedBudgets").Document();
-            await docRef.SetAsync(new SharedBudget { UserId = sharedUid, OwnerUid = ownerUid, BudgetIds = newBudgetIds }, SetOptions.Overwrite);
-        }
-        else
-        {
-            var docRef = snapshot.Documents[0].Reference;
-            var doc = snapshot.Documents[0].ConvertTo<SharedBudget>();
-            doc.BudgetIds = doc.BudgetIds.Union(newBudgetIds).Distinct().ToList();
-            await docRef.SetAsync(doc, SetOptions.MergeAll);
-        }
-    }
-}
-
-[FirestoreData]
-public class BudgetInfo : Budget
-{
-    [FirestoreProperty("budgetId")]
-    public string BudgetId { get; set; } = string.Empty;
-    [FirestoreProperty("isOwner")]
-    public bool IsOwner { get; set; }
-}
-
-[FirestoreData]
-public class Budget
-{
-    [FirestoreProperty("userId")]
-    public string? UserId { get; set; }
-    [FirestoreProperty("label")]
-    public string? Label { get; set; }
-    [FirestoreProperty("month")]
-    public string? Month { get; set; }
-    [FirestoreProperty("incomeTarget")]
-    public double IncomeTarget { get; set; }
-    [FirestoreProperty("categories")]
-    public List<BudgetCategory> Categories { get; set; } = new();
-    [FirestoreProperty("transactions")]
-    public List<Transaction> Transactions { get; set; } = new();
-    [FirestoreProperty("sharedWith")]
-    public List<UserRef> SharedWith { get; set; } = new();
-    [FirestoreProperty("sharedWithUids")]
-    public List<string> SharedWithUids { get; set; } = new();
-    [FirestoreProperty("originalBudgetId")]
-    public string? OriginalBudgetId { get; set; }
-    [FirestoreProperty("merchants")]
-    public List<Merchant> Merchants { get; set; } = new();
-}
-
-[FirestoreData]
-public class BudgetCategory
-{
-    [FirestoreProperty("name")]
-    public string? Name { get; set; }
-    [FirestoreProperty("target")]
-    public double Target { get; set; }
-    [FirestoreProperty("isFund")]
-    public bool IsFund { get; set; }
-    [FirestoreProperty("group")]
-    public string? Group { get; set; }
-    [FirestoreProperty("carryover")]
-    public double? Carryover { get; set; }
-}
-
-[FirestoreData]
-public class Transaction
-{
-    [FirestoreProperty("id")]
-    public string? Id { get; set; }
-    [FirestoreProperty("date")]
-    public string? Date { get; set; }
-    [FirestoreProperty("budgetMonth")]
-    public string? BudgetMonth { get; set; }
-    [FirestoreProperty("merchant")]
-    public string? Merchant { get; set; }
-    [FirestoreProperty("categories")]
-    public List<TransactionCategory> Categories { get; set; } = new();
-    [FirestoreProperty("amount")]
-    public double Amount { get; set; }
-    [FirestoreProperty("notes")]
-    public string? Notes { get; set; }
-    [FirestoreProperty("recurring")]
-    public bool Recurring { get; set; }
-    [FirestoreProperty("recurringInterval")]
-    public string? RecurringInterval { get; set; }
-    [FirestoreProperty("userId")]
-    public string? UserId { get; set; }
-    [FirestoreProperty("isIncome")]
-    public bool IsIncome { get; set; }
-    [FirestoreProperty("accountNumber")]
-    public string? AccountNumber { get; set; }
-    [FirestoreProperty("accountSource")]
-    public string? AccountSource { get; set; }
-    [FirestoreProperty("postedDate")]
-    public string? PostedDate { get; set; }
-    [FirestoreProperty("importedMerchant")]
-    public string? ImportedMerchant { get; set; }
-    [FirestoreProperty("status")]
-    public string? Status { get; set; }
-}
-
-[FirestoreData]
-public class TransactionCategory
-{
-    [FirestoreProperty("category")]
-    public string? Category { get; set; }
-    [FirestoreProperty("amount")]
-    public double Amount { get; set; }
-}
-
-[FirestoreData]
-public class EditEvent
-{
-    [FirestoreProperty("userId")]
-    public string? UserId { get; set; }
-    [FirestoreProperty("userEmail")]
-    public string? UserEmail { get; set; }
-    [FirestoreProperty("timestamp")]
-    public DateTime Timestamp { get; set; }
-    [FirestoreProperty("action")]
-    public string? Action { get; set; }
-}
-
-[FirestoreData]
-public class Merchant
-{
-    [FirestoreProperty("name")]
-    public string? Name { get; set; }
-    [FirestoreProperty("usageCount")]
-    public int UsageCount { get; set; }
-}
-
-[FirestoreData]
-public class UserRef
-{
-    [FirestoreProperty("uid")]
-    public string? Uid { get; set; }
-    [FirestoreProperty("email")]
-    public string? Email { get; set; }
-}
-
-[FirestoreData]
-public class ImportedTransaction
-{
-    [FirestoreProperty("id")]
-    public string? Id { get; set; }
-    [FirestoreProperty("accountNumber")]
-    public string? AccountNumber { get; set; }
-    [FirestoreProperty("accountSource")]
-    public string? AccountSource { get; set; }
-    [FirestoreProperty("payee")]
-    public string? Payee { get; set; }
-    [FirestoreProperty("postedDate")]
-    public string? PostedDate { get; set; }
-    [FirestoreProperty("amount")]
-    public double Amount { get; set; }
-    [FirestoreProperty("status")]
-    public string? Status { get; set; }
-    [FirestoreProperty("matched")]
-    public bool Matched { get; set; }
-    [FirestoreProperty("ignored")]
-    public bool Ignored { get; set; }
-    [FirestoreProperty("debitAmount")]
-    public double? DebitAmount { get; set; }
-    [FirestoreProperty("creditAmount")]
-    public double? CreditAmount { get; set; }
-}
-
-[FirestoreData]
-public class ImportedTransactionDoc
-{
-    [FirestoreProperty("id")]
-    public string? Id { get; set; }
-    [FirestoreProperty("userId")]
-    public string? UserId { get; set; }
-    [FirestoreProperty("sharedWith")]
-    public List<UserRef> SharedWith { get; set; } = new();
-    [FirestoreProperty("sharedWithUids")]
-    public List<string> SharedWithUids { get; set; } = new();
-    [FirestoreProperty("importedTransactions")]
-    public List<ImportedTransaction> ImportedTransactions { get; set; } = new();
-}
-
-[FirestoreData]
-public class SharedBudget
-{
-    [FirestoreProperty("ownerUid")]
-    public string? OwnerUid { get; set; }
-    [FirestoreProperty("userId")]
-    public string? UserId { get; set; }
-    [FirestoreProperty("budgetIds")]
-    public List<string> BudgetIds { get; set; } = new();
 }

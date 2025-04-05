@@ -5,6 +5,7 @@ using Google.Cloud.Firestore.V1;
 using Microsoft.OpenApi.Models;
 using FamilyBudgetApi.Services;
 using System.IO;
+using FamilyBudgetApi.Controllers;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,9 +21,9 @@ if (string.IsNullOrEmpty(credentialsJson))
 try
 {
     // Write the credentials to a temporary file
+    var tempCredentialsPath = Path.Combine(Path.GetTempPath(), "firebase-service-account.json");
     try
     {
-        var tempCredentialsPath = Path.Combine(Path.GetTempPath(), "firebase-service-account.json");
         File.WriteAllText(tempCredentialsPath, credentialsJson);
         Environment.SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", tempCredentialsPath);
         Console.WriteLine($"Firebase credentials loaded from environment variable and written to {tempCredentialsPath}");
@@ -79,7 +80,10 @@ builder.Services.AddCors(options =>
 builder.Services.AddControllers();
 
 // Add services
+builder.Services.AddSingleton<FamilyService>();
 builder.Services.AddSingleton<BudgetService>();
+builder.Services.AddSingleton<FamilyController>();
+builder.Services.AddSingleton<BudgetController>();
 builder.Services.AddSingleton<UserService>();
 
 // Add Brevo
