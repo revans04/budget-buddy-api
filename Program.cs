@@ -1,3 +1,4 @@
+/** Program.cs **/
 using FirebaseAdmin;
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Firestore;
@@ -82,9 +83,8 @@ builder.Services.AddControllers();
 // Add services
 builder.Services.AddSingleton<FamilyService>();
 builder.Services.AddSingleton<BudgetService>();
-builder.Services.AddSingleton<FamilyController>();
-builder.Services.AddSingleton<BudgetController>();
 builder.Services.AddSingleton<UserService>();
+builder.Services.AddSingleton<BrevoService>();
 
 // Add Brevo
 builder.Services.Configure<FamilyBudgetApi.Models.BrevoSettings>(builder.Configuration.GetSection("Brevo"));

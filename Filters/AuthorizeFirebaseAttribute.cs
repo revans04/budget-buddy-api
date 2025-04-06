@@ -2,6 +2,7 @@
 using FirebaseAdmin.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
+using System.IdentityModel.Tokens.Jwt;
 using System.Threading.Tasks;
 
 public class AuthorizeFirebaseAttribute : ActionFilterAttribute
@@ -20,6 +21,9 @@ public class AuthorizeFirebaseAttribute : ActionFilterAttribute
         {
             var decodedToken = await FirebaseAuth.DefaultInstance.VerifyIdTokenAsync(token);
             context.HttpContext.Items["UserId"] = decodedToken.Uid;
+            var handler = new JwtSecurityTokenHandler();
+            var jwtToken = handler.ReadJwtToken(token);
+            context.HttpContext.Items["Email"] = jwtToken.Claims.FirstOrDefault(c => c.Type == "email").Value ?? null;
             await next();
         }
         catch (Exception ex)
