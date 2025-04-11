@@ -71,7 +71,7 @@ builder.Services.AddCors(options =>
             "http://localhost:8081",
             "http://family-budget.local:8081",
             "https://budget-buddy-a6b6c.web.app",
-            "https://steadyrise.us",
+            "https://app.steadyrise.us",
             "https://budget-buddy-a6b6c.firebaseapp.com")
               .AllowAnyMethod()
               .AllowAnyHeader();

@@ -3,6 +3,7 @@ using FamilyBudgetApi.Services;
 using FamilyBudgetApi.Models;
 using Google.Cloud.Firestore;
 using Newtonsoft.Json;
+using System.Configuration;
 
 namespace FamilyBudgetApi.Controllers
 {
@@ -12,11 +13,13 @@ namespace FamilyBudgetApi.Controllers
     {
         private readonly FamilyService _familyService;
         private readonly BrevoService _brevoService;
+        private readonly string _baseUrl;
 
-        public FamilyController(FamilyService familyService, BrevoService brevoService)
+        public FamilyController(FamilyService familyService, BrevoService brevoService, IConfiguration configuration)
         {
             _familyService = familyService;
             _brevoService = brevoService;
+            _baseUrl = configuration["BaseUrl"];
         }
 
         [HttpGet("{uid}")]
@@ -101,7 +104,7 @@ namespace FamilyBudgetApi.Controllers
 
             try
             {
-                var inviteLink = $"https://budget-buddy-a6b6c.firebaseapp.com//accept-invite?token={token}"; // Update to your real URL
+                var inviteLink = $"{_baseUrl}/accept-invite?token={token}"; // Update to your real URL
                 await _brevoService.SendInviteEmail(pendingInvite.InviteeEmail, family.Name, inviteLink);
             }
             catch (Exception ex)
