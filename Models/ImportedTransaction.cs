@@ -8,25 +8,37 @@ namespace FamilyBudgetApi.Models
     {
         [FirestoreProperty("id")]
         public string? Id { get; set; }
+
+        [FirestoreProperty]
+        public string AccountId { get; set; }
+
         [FirestoreProperty("accountNumber")]
         public string? AccountNumber { get; set; }
+
         [FirestoreProperty("accountSource")]
         public string? AccountSource { get; set; }
+
         [FirestoreProperty("payee")]
         public string? Payee { get; set; }
+
         [FirestoreProperty("postedDate")]
         public string? PostedDate { get; set; }
+
         [FirestoreProperty("amount")]
         public double? Amount { get; set; }
+
         [FirestoreProperty("status")]
         public string? Status { get; set; }
+
         [FirestoreProperty("matched")]
         public bool Matched { get; set; }
+
         [FirestoreProperty("ignored")]
         public bool Ignored { get; set; }
 
         [FirestoreProperty("debitAmount")]
         public double? DebitAmount { get; set; }
+        
         [FirestoreProperty("creditAmount")]
         public double? CreditAmount { get; set; }
 
