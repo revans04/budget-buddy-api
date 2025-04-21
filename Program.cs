@@ -7,6 +7,7 @@ using Microsoft.OpenApi.Models;
 using FamilyBudgetApi.Services;
 using System.IO;
 using FamilyBudgetApi.Controllers;
+using FamilyBudgetApi.Converters;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -74,17 +75,23 @@ builder.Services.AddCors(options =>
             "https://app.steadyrise.us",
             "https://budget-buddy-a6b6c.firebaseapp.com")
               .AllowAnyMethod()
-              .AllowAnyHeader();
+              .AllowAnyHeader()
+              .SetPreflightMaxAge(TimeSpan.FromDays(1)); // Cache preflight for 1 day
     });
 });
 
 // Add controllers
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        options.JsonSerializerOptions.Converters.Add(new TimestampJsonConverter());
+    });
 
 // Add services
 builder.Services.AddSingleton<FamilyService>();
 builder.Services.AddSingleton<BudgetService>();
 builder.Services.AddSingleton<UserService>();
+builder.Services.AddSingleton<AccountService>();
 builder.Services.AddSingleton<BrevoService>();
 
 // Add Brevo

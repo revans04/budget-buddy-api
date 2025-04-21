@@ -109,6 +109,9 @@ namespace FamilyBudgetApi.Models
 
         [FirestoreProperty("checkNumber")]
         public string? CheckNumber { get; set; }
+
+        [FirestoreProperty("deleted")]
+        public bool? Deleted { get; set; }
     }
 
     [FirestoreData]

@@ -36,12 +36,11 @@ namespace FamilyBudgetApi.Services
                 .Select(doc =>
                 {
                     var budget = doc.ConvertTo<BudgetInfo>();
-                    budget.BudgetId = doc.Id; // Set BudgetId here
-                    budget.IsOwner = family.OwnerUid == userId; // Set IsOwner here
+                    budget.BudgetId = doc.Id;
+                    budget.IsOwner = family.OwnerUid == userId;
                     return budget;
                 })
                 .ToList();
-
             return budgets;
         }
 
@@ -76,8 +75,16 @@ namespace FamilyBudgetApi.Services
                 .WhereEqualTo("id", budget.FamilyId);
             if (!(await familyQuery.GetSnapshotAsync()).Any())
                 throw new Exception("User not part of this family");
+
+            // Ensure merchants list is not null
+            if (budget.Merchants == null)
+            {
+                budget.Merchants = new List<Merchant>();
+                Console.WriteLine($"Initialized Merchants list for budget {budgetId} in SaveBudget");
+            }
+
             await _firestoreDb.Collection("budgets").Document(budgetId).SetAsync(budget, SetOptions.MergeAll);
-            await LogEditEvent(budgetId, userId, userEmail, "update_budget"); // Add action parameter if needed
+            await LogEditEvent(budgetId, userId, userEmail, "update_budget");
         }
 
         public async Task<List<EditEvent>> GetEditHistory(string budgetId, DateTime since)
@@ -96,7 +103,7 @@ namespace FamilyBudgetApi.Services
             if (!string.IsNullOrEmpty(transaction.Merchant))
             {
                 Console.WriteLine($"Adding merchant {transaction.Merchant} for budget {budgetId}");
-                await UpdateMerchants(budgetId, transaction.Merchant, 1);
+                await UpdateMerchants(budgetId, transaction.Merchant, 1, budget);
             }
             await SaveBudget(budgetId, budget, userId, userEmail.Replace("update_budget", "add_transaction"));
         }
@@ -120,12 +127,12 @@ namespace FamilyBudgetApi.Services
             if (!string.IsNullOrEmpty(oldMerchant) && oldMerchant != transaction.Merchant)
             {
                 Console.WriteLine($"Decreasing count for old merchant {oldMerchant} in budget {budgetId}");
-                await UpdateMerchants(budgetId, oldMerchant, -1);
+                await UpdateMerchants(budgetId, oldMerchant, -1, budget);
             }
             if (!string.IsNullOrEmpty(transaction.Merchant) && (oldMerchant == null || oldMerchant != transaction.Merchant))
             {
                 Console.WriteLine($"Increasing count for new merchant {transaction.Merchant} in budget {budgetId}");
-                await UpdateMerchants(budgetId, transaction.Merchant, 1);
+                await UpdateMerchants(budgetId, transaction.Merchant, 1, budget);
             }
 
             await SaveBudget(budgetId, budget, userId, userEmail.Replace("update_budget", transaction.Id != null ? "update_transaction" : "add_transaction"));
@@ -136,21 +143,22 @@ namespace FamilyBudgetApi.Services
             var budget = await GetBudget(budgetId) ?? throw new Exception($"Budget {budgetId} not found");
             var transaction = budget.Transactions.FirstOrDefault(t => t.Id == transactionId) ?? throw new Exception($"Transaction {transactionId} not found");
             budget.Transactions.Remove(transaction);
-            if (!string.IsNullOrEmpty(transaction.Merchant)) await UpdateMerchants(budgetId, transaction.Merchant, -1);
+            if (!string.IsNullOrEmpty(transaction.Merchant))
+            {
+                Console.WriteLine($"Decreasing count for merchant {transaction.Merchant} in budget {budgetId}");
+                await UpdateMerchants(budgetId, transaction.Merchant, -1, budget);
+            }
             await SaveBudget(budgetId, budget, userId, userEmail.Replace("update_budget", "delete_transaction"));
         }
 
-        private async Task UpdateMerchants(string budgetId, string merchantName, int increment)
+        private async Task UpdateMerchants(string budgetId, string merchantName, int increment, Budget budget)
         {
-            var budgetRef = _firestoreDb.Collection("budgets").Document(budgetId);
-            var budgetSnap = await budgetRef.GetSnapshotAsync();
-            if (!budgetSnap.Exists) throw new Exception($"Budget {budgetId} not found");
+            if (string.IsNullOrEmpty(merchantName)) return;
 
-            var budget = budgetSnap.ConvertTo<Budget>();
-            if (budget.Merchants == null) // Initialize if null
+            if (budget.Merchants == null)
             {
                 budget.Merchants = new List<Merchant>();
-                Console.WriteLine($"Initialized Merchants list for budget {budgetId}");
+                Console.WriteLine($"Initialized Merchants list for budget {budgetId} in UpdateMerchants");
             }
 
             var merchant = budget.Merchants.FirstOrDefault(m => m.Name == merchantName);
@@ -170,7 +178,6 @@ namespace FamilyBudgetApi.Services
                 Console.WriteLine($"Added {merchantName} with count {increment} to budget {budgetId}");
             }
             budget.Merchants.Sort((a, b) => b.UsageCount.CompareTo(a.UsageCount));
-            await budgetRef.SetAsync(budget, SetOptions.MergeAll);
         }
 
         private async Task LogEditEvent(string budgetId, string userId, string userEmail, string action)

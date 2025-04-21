@@ -24,12 +24,17 @@ namespace FamilyBudgetApi.Models
         public bool Matched { get; set; }
         [FirestoreProperty("ignored")]
         public bool Ignored { get; set; }
+
         [FirestoreProperty("debitAmount")]
         public double? DebitAmount { get; set; }
         [FirestoreProperty("creditAmount")]
         public double? CreditAmount { get; set; }
+
         [FirestoreProperty("checkNumber")]
         public string? CheckNumber { get; set; }
+
+        [FirestoreProperty("deleted")]
+        public bool? Deleted { get; set; }
     }
 
     [FirestoreData]
