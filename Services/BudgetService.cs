@@ -214,11 +214,10 @@ namespace FamilyBudgetApi.Services
 
         public async Task<string> SaveImportedTransactions(string userId, ImportedTransactionDoc doc)
         {
-            var docRef = _firestoreDb.Collection("importedTransactions").Document(doc.DocumentId);
+            var docRef = _firestoreDb.Collection("importedTransactions").Document(doc.Id);
             doc.UserId = userId;
-            doc.DocId = doc.DocumentId;
             await docRef.SetAsync(doc, SetOptions.Overwrite);
-            return doc.DocumentId;
+            return doc.Id;
         }
 
         public async Task<List<ImportedTransactionDoc>> GetImportedTransactions(string userId)
@@ -234,7 +233,6 @@ namespace FamilyBudgetApi.Services
                 .Select(doc =>
                 {
                     var importedDoc = doc.ConvertTo<ImportedTransactionDoc>();
-                    importedDoc.DocumentId = doc.Id;
                     return importedDoc;
                 })
                 .ToList();
@@ -513,7 +511,7 @@ namespace FamilyBudgetApi.Services
                         continue;
                     }
 
-                    var docId = targetEntry.doc.DocumentId;
+                    var docId = targetEntry.doc.Id;
                     if (!updatedDocs.ContainsKey(docId)) updatedDocs[docId] = targetEntry.doc;
 
                     var transactions = updatedDocs[docId].importedTransactions.ToList();

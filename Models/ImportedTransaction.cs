@@ -52,10 +52,8 @@ namespace FamilyBudgetApi.Models
     [FirestoreData]
     public class ImportedTransactionDoc
     {
-        public string DocumentId { get; set; }
-
         [FirestoreProperty("id")]
-        public string DocId { get; set; } // Maps to the Firestore "id" field (e.g., "c2cf43c9-08a5-4f40-bdbc-195797a91bc1")
+        public string Id { get; set; } // Maps to the Firestore "id" field (e.g., "c2cf43c9-08a5-4f40-bdbc-195797a91bc1")
 
         [FirestoreProperty("familyId")]
         public string FamilyId { get; set; }
