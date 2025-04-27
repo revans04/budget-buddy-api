@@ -3,7 +3,9 @@ using FamilyBudgetApi.Services;
 using FamilyBudgetApi.Models;
 using Google.Cloud.Firestore;
 using Newtonsoft.Json;
+using System;
 using System.Configuration;
+using System.Threading.Tasks;
 
 namespace FamilyBudgetApi.Controllers
 {
@@ -26,8 +28,16 @@ namespace FamilyBudgetApi.Controllers
         [AuthorizeFirebase]
         public async Task<IActionResult> GetUserFamily(string uid)
         {
-            var family = await _familyService.GetUserFamily(uid);
-            return family != null ? Ok(family) : Ok(null); // Return null JSON instead of 404
+            try
+            {
+                var family = await _familyService.GetUserFamily(uid);
+                return family != null ? Ok(family) : Ok(null);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in GetUserFamily: {ex.Message}");
+                return StatusCode(500, new { Error = $"Failed to get family: {ex.Message}" });
+            }
         }
 
         [HttpPost("create")]
@@ -38,20 +48,28 @@ namespace FamilyBudgetApi.Controllers
             if (string.IsNullOrEmpty(request.Name))
                 return BadRequest(new { Error = "Family name is required" });
 
-            var familyId = Guid.NewGuid().ToString();
-            var family = new Family
+            try
             {
-                Id = familyId,
-                Name = request.Name,
-                OwnerUid = uid,
-                Members = new List<UserRef> { new UserRef { Uid = uid, Email = request.Email } },
-                MemberUids = new List<string> { uid },
-                CreatedAt = Timestamp.FromDateTime(DateTime.UtcNow),
-                UpdatedAt = Timestamp.FromDateTime(DateTime.UtcNow)
-            };
+                var familyId = Guid.NewGuid().ToString();
+                var family = new Family
+                {
+                    Id = familyId,
+                    Name = request.Name,
+                    OwnerUid = uid,
+                    Members = new List<UserRef> { new UserRef { Uid = uid, Email = request.Email } },
+                    MemberUids = new List<string> { uid },
+                    CreatedAt = Timestamp.FromDateTime(DateTime.UtcNow),
+                    UpdatedAt = Timestamp.FromDateTime(DateTime.UtcNow)
+                };
 
-            await _familyService.CreateFamily(familyId, family);
-            return Ok(new { FamilyId = familyId, Name = family.Name });
+                await _familyService.CreateFamily(familyId, family);
+                return Ok(new { FamilyId = familyId, Name = family.Name });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in CreateFamily: {ex.Message}");
+                return StatusCode(500, new { Error = $"Failed to create family: {ex.Message}" });
+            }
         }
 
         [HttpPost("{familyId}/members")]
@@ -63,8 +81,16 @@ namespace FamilyBudgetApi.Controllers
             if (family == null || family.OwnerUid != uid)
                 return Unauthorized("Only the family owner can add members");
 
-            await _familyService.AddFamilyMember(familyId, member);
-            return Ok();
+            try
+            {
+                await _familyService.AddFamilyMember(familyId, member);
+                return Ok();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in AddFamilyMember: {ex.Message}");
+                return StatusCode(500, new { Error = $"Failed to add family member: {ex.Message}" });
+            }
         }
 
         [HttpDelete("{familyId}/members/{memberUid}")]
@@ -76,8 +102,122 @@ namespace FamilyBudgetApi.Controllers
             if (family == null || family.OwnerUid != uid)
                 return Unauthorized("Only the family owner can remove members");
 
-            await _familyService.RemoveFamilyMember(familyId, memberUid);
-            return Ok();
+            try
+            {
+                await _familyService.RemoveFamilyMember(familyId, memberUid);
+                return Ok();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in RemoveFamilyMember: {ex.Message}");
+                return StatusCode(500, new { Error = $"Failed to remove family member: {ex.Message}" });
+            }
+        }
+
+        [HttpPost("{familyId}/entities")]
+        [AuthorizeFirebase]
+        public async Task<IActionResult> CreateEntity(string familyId, [FromBody] Entity entity)
+        {
+            var uid = HttpContext.Items["UserId"]?.ToString();
+            var family = await _familyService.GetFamilyById(familyId);
+            if (family == null || family.OwnerUid != uid)
+                return Unauthorized("Only the family owner can create entities");
+
+            try
+            {
+                await _familyService.CreateEntity(familyId, entity);
+                return Ok(new { EntityId = entity.Id });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in CreateEntity: {ex.Message}");
+                return BadRequest(new { Error = ex.Message });
+            }
+        }
+
+        [HttpPut("{familyId}/entities/{entityId}")]
+        [AuthorizeFirebase]
+        public async Task<IActionResult> UpdateEntity(string familyId, string entityId, [FromBody] Entity entity)
+        {
+            var uid = HttpContext.Items["UserId"]?.ToString();
+            var family = await _familyService.GetFamilyById(familyId);
+            if (family == null || family.OwnerUid != uid)
+                return Unauthorized("Only the family owner can update entities");
+
+            entity.Id = entityId;
+            try
+            {
+                await _familyService.UpdateEntity(familyId, entity);
+                return Ok();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in UpdateEntity: {ex.Message}");
+                return BadRequest(new { Error = ex.Message });
+            }
+        }
+
+        [HttpDelete("{familyId}/entities/{entityId}")]
+        [AuthorizeFirebase]
+        public async Task<IActionResult> DeleteEntity(string familyId, string entityId)
+        {
+            var uid = HttpContext.Items["UserId"]?.ToString();
+            var family = await _familyService.GetFamilyById(familyId);
+            if (family == null || family.OwnerUid != uid)
+                return Unauthorized("Only the family owner can delete entities");
+
+            try
+            {
+                await _familyService.DeleteEntity(familyId, entityId);
+                return Ok();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in DeleteEntity: {ex.Message}");
+                return BadRequest(new { Error = ex.Message });
+            }
+        }
+
+        [HttpPost("{familyId}/entities/{entityId}/members")]
+        [AuthorizeFirebase]
+        public async Task<IActionResult> AddEntityMember(string familyId, string entityId, [FromBody] UserRef member)
+        {
+            var uid = HttpContext.Items["UserId"]?.ToString();
+            var family = await _familyService.GetFamilyById(familyId);
+            if (family == null || family.OwnerUid != uid)
+                return Unauthorized("Only the family owner can add entity members");
+
+            try
+            {
+                await _familyService.AddEntityMember(familyId, entityId, member);
+                return Ok();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in AddEntityMember: {ex.Message}");
+                return BadRequest(new { Error = ex.Message });
+            }
+        }
+
+        [HttpDelete("{familyId}/entities/{entityId}/members/{memberUid}")]
+        [AuthorizeFirebase]
+        public async Task<IActionResult> RemoveEntityMember(string familyId, string entityId, string memberUid)
+        {
+            var uid = HttpContext.Items["UserId"]?.ToString();
+            var family = await _familyService.GetFamilyById(familyId);
+            if (family == null || family.OwnerUid != uid)
+                return Unauthorized("Only the family owner can remove entity members");
+
+            try
+            {
+                await _familyService.RemoveEntityMember(familyId, entityId, memberUid);
+                return Ok();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in RemoveEntityMember: {ex.Message}");
+                return BadRequest(new { Error = ex.Message });
+            }
         }
 
         [HttpPost("invite")]
@@ -100,20 +240,19 @@ namespace FamilyBudgetApi.Controllers
                 ExpiresAt = Timestamp.FromDateTime(DateTime.UtcNow.AddDays(7))
             };
 
-            await _familyService.CreatePendingInvite(pendingInvite);
-
             try
             {
-                var inviteLink = $"{_baseUrl}/accept-invite?token={token}"; // Update to your real URL
+                await _familyService.CreatePendingInvite(pendingInvite);
+                var inviteLink = $"{_baseUrl}/accept-invite?token={token}";
                 await _brevoService.SendInviteEmail(pendingInvite.InviteeEmail, family.Name, inviteLink);
+                return Ok(new { Message = "Invite sent", Token = token });
             }
             catch (Exception ex)
             {
-                await _familyService.DeletePendingInvite(token); // Rollback on failure
+                await _familyService.DeletePendingInvite(token);
+                Console.WriteLine($"Error in InviteUser: {ex.Message}");
                 return StatusCode(500, new { Error = $"Failed to send invite email: {ex.Message}" });
             }
-
-            return Ok(new { Message = "Invite sent", Token = token });
         }
 
         [HttpPost("accept-invite")]
@@ -122,7 +261,6 @@ namespace FamilyBudgetApi.Controllers
         {
             var uid = HttpContext.Items["UserId"]?.ToString();
             var email = HttpContext.Items["Email"]?.ToString();
-            Console.WriteLine("Contect.Items=" + JsonConvert.SerializeObject(HttpContext.Items));
             var pendingInvite = await _familyService.GetPendingInviteByToken(request.Token);
             if (pendingInvite == null || pendingInvite.ExpiresAt.ToDateTime() < DateTime.UtcNow)
                 return BadRequest(new { Error = "Invalid or expired invite" });
@@ -134,12 +272,19 @@ namespace FamilyBudgetApi.Controllers
             if (family == null)
                 return BadRequest(new { Error = "Family not found" });
 
-            var member = new UserRef { Uid = uid, Email = email };
-            await _familyService.AddFamilyMember(family.Id, member);
-            await _familyService.DeletePendingInvite(pendingInvite.Token);
-            await _familyService.UpdateLastAccessed(uid); // Update on join
-
-            return Ok(new { FamilyId = family.Id });
+            try
+            {
+                var member = new UserRef { Uid = uid, Email = email };
+                await _familyService.AddFamilyMember(family.Id, member);
+                await _familyService.DeletePendingInvite(pendingInvite.Token);
+                await _familyService.UpdateLastAccessed(uid);
+                return Ok(new { FamilyId = family.Id });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in AcceptInvite: {ex.Message}");
+                return StatusCode(500, new { Error = $"Failed to accept invite: {ex.Message}" });
+            }
         }
 
         [HttpGet("pending-invites/{inviterUid}")]
@@ -150,16 +295,32 @@ namespace FamilyBudgetApi.Controllers
             if (uid != inviterUid)
                 return Unauthorized("Can only view your own pending invites");
 
-            var invites = await _familyService.GetPendingInvitesByInviter(inviterUid);
-            return Ok(invites);
+            try
+            {
+                var invites = await _familyService.GetPendingInvitesByInviter(inviterUid);
+                return Ok(invites);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in GetPendingInvites: {ex.Message}");
+                return StatusCode(500, new { Error = $"Failed to get pending invites: {ex.Message}" });
+            }
         }
 
         [HttpGet("last-accessed/{uid}")]
         [AuthorizeFirebase]
         public async Task<IActionResult> GetLastAccessed(string uid)
         {
-            var lastAccessed = await _familyService.GetLastAccessed(uid);
-            return Ok(new { LastAccessed = lastAccessed?.ToDateTime() });
+            try
+            {
+                var lastAccessed = await _familyService.GetLastAccessed(uid);
+                return Ok(new { LastAccessed = lastAccessed?.ToDateTime() });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in GetLastAccessed: {ex.Message}");
+                return StatusCode(500, new { Error = $"Failed to get last accessed: {ex.Message}" });
+            }
         }
     }
 }

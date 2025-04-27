@@ -1,14 +1,10 @@
-//Models/Budget.cs
 using Google.Cloud.Firestore;
 
 namespace FamilyBudgetApi.Models
 {
-
     [FirestoreData]
     public class BudgetInfo : Budget
     {
-        [FirestoreProperty("budgetId")]
-        public string BudgetId { get; set; } = string.Empty;
         [FirestoreProperty("isOwner")]
         public bool IsOwner { get; set; }
     }
@@ -16,8 +12,14 @@ namespace FamilyBudgetApi.Models
     [FirestoreData]
     public class Budget
     {
+        [FirestoreProperty("budgetId")]
+        public string BudgetId { get; set; } = string.Empty;
+
         [FirestoreProperty("familyId")]
         public required string FamilyId { get; set; }
+
+        [FirestoreProperty("entityId")]
+        public string? EntityId { get; set; } // New field
 
         [FirestoreProperty("month")]
         public required string Month { get; set; }
@@ -72,7 +74,7 @@ namespace FamilyBudgetApi.Models
         public string? Merchant { get; set; }
 
         [FirestoreProperty("categories")]
-        public List<TransactionCategory>? Categories { get; set; } // Made nullable
+        public List<TransactionCategory>? Categories { get; set; }
 
         [FirestoreProperty("amount")]
         public double Amount { get; set; }
@@ -112,6 +114,9 @@ namespace FamilyBudgetApi.Models
 
         [FirestoreProperty("deleted")]
         public bool? Deleted { get; set; }
+
+        [FirestoreProperty("entityId")]
+        public string? EntityId { get; set; } // New field
     }
 
     [FirestoreData]
@@ -121,6 +126,13 @@ namespace FamilyBudgetApi.Models
         public string? Category { get; set; }
         [FirestoreProperty("amount")]
         public double Amount { get; set; }
+    }
+
+
+    public class TransactionWithBudgetId
+    {
+        public string BudgetId { get; set; }
+        public Transaction Transaction { get; set; }
     }
 
     [FirestoreData]
@@ -144,16 +156,16 @@ namespace FamilyBudgetApi.Models
     }
 
     public class ReconcileRequest
-{
-    public string BudgetTransactionId { get; set; }
-    public string ImportedTransactionId { get; set; }
-    public bool Match { get; set; }
-    public bool Ignore { get; set; }
-}
+    {
+        public string BudgetTransactionId { get; set; }
+        public string ImportedTransactionId { get; set; }
+        public bool Match { get; set; }
+        public bool Ignore { get; set; }
+    }
 
-public class BatchReconcileRequest
-{
-    public string BudgetId { get; set; }
-    public List<ReconcileRequest> Reconciliations { get; set; }
-}
+    public class BatchReconcileRequest
+    {
+        public string BudgetId { get; set; }
+        public List<ReconcileRequest> Reconciliations { get; set; }
+    }
 }

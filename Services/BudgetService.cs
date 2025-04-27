@@ -1,11 +1,13 @@
-//Services/BudgetService.cs
 using Google.Cloud.Firestore;
 using FamilyBudgetApi.Models;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 
 namespace FamilyBudgetApi.Services
 {
-
     public class BudgetService
     {
         private readonly FirestoreDb _firestoreDb;
@@ -15,24 +17,26 @@ namespace FamilyBudgetApi.Services
         private static readonly Dictionary<string, PropertyInfo> TransactionPropertyMap = TransactionProperties.ToDictionary(p => p.Name);
         private static readonly Dictionary<string, PropertyInfo> ImportedTransactionPropertyMap = ImportedTransactionProperties.ToDictionary(p => p.Name);
 
-
-
         public BudgetService(FirestoreDb firestoreDb, FamilyService familyService)
         {
             _firestoreDb = firestoreDb;
             _familyService = familyService;
         }
 
-        public async Task<List<BudgetInfo>> LoadAccessibleBudgets(string userId)
+        public async Task<List<BudgetInfo>> LoadAccessibleBudgets(string userId, string? entityId = null)
         {
             var family = await _familyService.GetUserFamily(userId);
             if (family == null) return new List<BudgetInfo>();
 
-            var budgetsQuery = await _firestoreDb.Collection("budgets")
-                .WhereEqualTo("familyId", family.Id)
-                .GetSnapshotAsync();
+            var budgetsQuery = _firestoreDb.Collection("budgets")
+                .WhereEqualTo("familyId", family.Id);
+            if (!string.IsNullOrEmpty(entityId))
+            {
+                budgetsQuery = budgetsQuery.WhereEqualTo("entityId", entityId);
+            }
 
-            var budgets = budgetsQuery.Documents
+            var budgetsSnapshot = await budgetsQuery.GetSnapshotAsync();
+            var budgets = budgetsSnapshot.Documents
                 .Select(doc =>
                 {
                     var budget = doc.ConvertTo<BudgetInfo>();
@@ -76,7 +80,6 @@ namespace FamilyBudgetApi.Services
             if (!(await familyQuery.GetSnapshotAsync()).Any())
                 throw new Exception("User not part of this family");
 
-            // Ensure merchants list is not null
             if (budget.Merchants == null)
             {
                 budget.Merchants = new List<Merchant>();
@@ -138,11 +141,28 @@ namespace FamilyBudgetApi.Services
             await SaveBudget(budgetId, budget, userId, userEmail.Replace("update_budget", transaction.Id != null ? "update_transaction" : "add_transaction"));
         }
 
+        public async Task BatchSaveTransactions(string budgetId, List<Models.Transaction> transactions, string userId, string userEmail)
+        {
+            var budget = await GetBudget(budgetId) ?? throw new Exception($"Budget {budgetId} not found");
+            foreach (var transaction in transactions)
+            {
+                transaction.Id ??= _firestoreDb.Collection("budgets").Document().Id;
+                budget.Transactions.Add(transaction);
+                if (!string.IsNullOrEmpty(transaction.Merchant))
+                {
+                    Console.WriteLine($"Adding merchant {transaction.Merchant} for budget {budgetId}");
+                    await UpdateMerchants(budgetId, transaction.Merchant, 1, budget);
+                }
+            }
+
+            await SaveBudget(budgetId, budget, userId, userEmail.Replace("update_budget", "batch_add_transactions"));
+        }
+
         public async Task DeleteTransaction(string budgetId, string transactionId, string userId, string userEmail)
         {
             var budget = await GetBudget(budgetId) ?? throw new Exception($"Budget {budgetId} not found");
             var transaction = budget.Transactions.FirstOrDefault(t => t.Id == transactionId) ?? throw new Exception($"Transaction {transactionId} not found");
-            budget.Transactions.Remove(transaction);
+            transaction.Deleted = true;
             if (!string.IsNullOrEmpty(transaction.Merchant))
             {
                 Console.WriteLine($"Decreasing count for merchant {transaction.Merchant} in budget {budgetId}");
@@ -195,12 +215,11 @@ namespace FamilyBudgetApi.Services
         public async Task<string> SaveImportedTransactions(string userId, ImportedTransactionDoc doc)
         {
             var docRef = _firestoreDb.Collection("importedTransactions").Document(doc.DocumentId);
-            doc.UserId = userId; // Ensure userId is set
-            doc.DocId = doc.DocumentId; // Ensure DocId matches DocumentId
+            doc.UserId = userId;
+            doc.DocId = doc.DocumentId;
             await docRef.SetAsync(doc, SetOptions.Overwrite);
             return doc.DocumentId;
         }
-
 
         public async Task<List<ImportedTransactionDoc>> GetImportedTransactions(string userId)
         {
@@ -215,10 +234,181 @@ namespace FamilyBudgetApi.Services
                 .Select(doc =>
                 {
                     var importedDoc = doc.ConvertTo<ImportedTransactionDoc>();
-                    importedDoc.DocumentId = doc.Id; // Set the Firestore document ID
+                    importedDoc.DocumentId = doc.Id;
                     return importedDoc;
                 })
                 .ToList();
+        }
+
+        public async Task<List<ImportedTransaction>> GetImportedTransactionsByAccountId(string accountId)
+        {
+            Console.WriteLine($"Fetching imported transactions for account {accountId}");
+            var importedDocs = await _firestoreDb.Collection("importedTransactions").GetSnapshotAsync();
+
+            var transactions = new List<ImportedTransaction>();
+            foreach (var doc in importedDocs)
+            {
+                var importedDoc = doc.ConvertTo<ImportedTransactionDoc>();
+                var matchingTxs = importedDoc.importedTransactions
+                    .Where(tx => tx.AccountId == accountId && !(tx.Deleted ?? false))
+                    .ToList();
+                transactions.AddRange(matchingTxs);
+            }
+
+            Console.WriteLine($"Found {transactions.Count} imported transactions for account {accountId}");
+            return transactions;
+        }
+
+        public async Task BatchUpdateImportedTransactions(List<ImportedTransaction> transactions)
+        {
+            Console.WriteLine($"Batch updating {transactions.Count} imported transactions");
+            var groupedByDoc = transactions.GroupBy(tx => tx.Id.Split('-')[0]);
+            foreach (var group in groupedByDoc)
+            {
+                var docId = group.Key;
+                var docRef = _firestoreDb.Collection("importedTransactions").Document(docId);
+                var docSnap = await docRef.GetSnapshotAsync();
+                if (!docSnap.Exists)
+                {
+                    Console.WriteLine($"Imported transaction doc {docId} not found");
+                    continue;
+                }
+                var importedDoc = docSnap.ConvertTo<ImportedTransactionDoc>();
+                var importedTxs = importedDoc.importedTransactions.ToList();
+                foreach (var tx in group)
+                {
+                    var index = importedTxs.FindIndex(t => t.Id == tx.Id);
+                    if (index >= 0)
+                    {
+                        importedTxs[index] = tx;
+                    }
+                }
+                importedDoc.importedTransactions = importedTxs.ToArray();
+                await docRef.SetAsync(importedDoc, SetOptions.MergeAll);
+            }
+            Console.WriteLine($"Batch updated {transactions.Count} imported transactions");
+        }
+
+        public async Task<List<TransactionWithBudgetId>> GetBudgetTransactionsMatchedToImported(string accountId, string userId)
+        {
+            Console.WriteLine($"Fetching budget transactions matched to imported for account {accountId} and user {userId}");
+            // First, get all imported transactions for this account
+            var importedTxs = await GetImportedTransactionsByAccountId(accountId);
+            var matchedImportedTxs = importedTxs
+                .Where(tx => tx.Matched && !tx.Ignored && !(tx.Deleted ?? false))
+                .ToList();
+
+            // Get all budgets accessible to the user
+            var budgets = new List<Budget>();
+            var family = await _familyService.GetUserFamily(userId);
+            if (family == null)
+            {
+                Console.WriteLine($"No family found for user {userId}");
+                return new List<TransactionWithBudgetId>();
+            }
+
+            var budgetDocs = await _firestoreDb.Collection("budgets")
+                .WhereEqualTo("familyId", family.Id)
+                .GetSnapshotAsync();
+
+            foreach (var budgetDoc in budgetDocs)
+            {
+                var budget = budgetDoc.ConvertTo<Budget>();
+                if (await CanAccessBudget(budget, userId))
+                {
+                    budgets.Add(budget);
+                }
+            }
+
+            // Find budget transactions that match the imported transactions
+            var matchedBudgetTxs = new List<TransactionWithBudgetId>();
+            foreach (var budget in budgets)
+            {
+                var budgetTxs = budget.Transactions ?? new List<Models.Transaction>();
+                foreach (var importedTx in matchedImportedTxs)
+                {
+                    // Match criteria: same accountNumber, postedDate, amount, and payee/merchant
+                    var matchingBudgetTxs = budgetTxs
+                        .Where(tx =>
+                            (!tx.Deleted ?? false) &&
+                            tx.AccountNumber == importedTx.AccountNumber &&
+                            tx.PostedDate == importedTx.PostedDate &&
+                            (tx.Amount == importedTx.DebitAmount || tx.Amount == importedTx.CreditAmount) &&
+                            tx.Merchant == importedTx.Payee)
+                        .ToList();
+                    matchedBudgetTxs.AddRange(matchingBudgetTxs.Select(tx => new TransactionWithBudgetId
+                    {
+                        BudgetId = budget.BudgetId,
+                        Transaction = tx
+                    }));
+                }
+            }
+
+            Console.WriteLine($"Found {matchedBudgetTxs.Count} budget transactions matched to imported for account {accountId}");
+            return matchedBudgetTxs;
+        }
+
+        public async Task BatchUpdateBudgetTransactions(List<TransactionWithBudgetId> transactions, string userId, string userEmail)
+        {
+            Console.WriteLine($"Batch updating {transactions.Count} budget transactions by user {userId}");
+            var groupedByBudget = transactions.GroupBy(tx => tx.BudgetId);
+            foreach (var group in groupedByBudget)
+            {
+                var budgetId = group.Key;
+                var budget = await GetBudget(budgetId) ?? throw new Exception($"Budget {budgetId} not found");
+
+                if (!await CanAccessBudget(budget, userId))
+                    throw new Exception("User does not have access to this budget");
+
+                var transactionsList = budget.Transactions ?? new List<Models.Transaction>();
+                foreach (var txWithBudget in group)
+                {
+                    var tx = txWithBudget.Transaction;
+                    var index = transactionsList.FindIndex(t => t.Id == tx.Id);
+                    if (index >= 0)
+                    {
+                        transactionsList[index] = tx;
+                    }
+                }
+
+                budget.Transactions = transactionsList;
+                await SaveBudget(budgetId, budget, userId, userEmail.Replace("update_budget", $"batch_update_transactions_{group.Count()}"));
+            }
+            Console.WriteLine($"Batch updated {transactions.Count} budget transactions");
+        }
+        
+        public async Task<bool> CanAccessBudget(Budget budget, string userId)
+        {
+            Console.WriteLine($"Checking if user {userId} can access budget {budget.BudgetId}");
+            var familyDoc = await _firestoreDb.Collection("families").Document(budget.FamilyId).GetSnapshotAsync();
+            if (!familyDoc.Exists)
+            {
+                Console.WriteLine($"Family {budget.FamilyId} not found for budget {budget.BudgetId}");
+                return false;
+            }
+            var family = familyDoc.ConvertTo<Family>();
+            if (!family.MemberUids.Contains(userId))
+            {
+                Console.WriteLine($"User {userId} is not a member of family {budget.FamilyId}");
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(budget.EntityId))
+            {
+                Console.WriteLine($"Budget {budget.BudgetId} has no entity, access granted for user {userId}");
+                return true;
+            }
+
+            var entity = family.Entities?.FirstOrDefault(e => e.Id == budget.EntityId);
+            if (entity == null)
+            {
+                Console.WriteLine($"Entity {budget.EntityId} not found in family {budget.FamilyId} for budget {budget.BudgetId}");
+                return false;
+            }
+
+            var canAccess = entity.Members.Any(m => m.Uid == userId);
+            Console.WriteLine($"User {userId} {(canAccess ? "can" : "cannot")} access budget {budget.BudgetId}");
+            return canAccess;
         }
 
         public async Task UpdateImportedTransaction(string docId, string transactionId, bool? matched = null, bool? ignored = null)
@@ -235,7 +425,6 @@ namespace FamilyBudgetApi.Services
             var existingTransaction = transactions[index];
             var updatedTransaction = new ImportedTransaction();
 
-            // Use cached PropertyInfo to copy all properties from the existing transaction
             foreach (var prop in ImportedTransactionProperties)
             {
                 if (prop.CanWrite)
@@ -245,7 +434,6 @@ namespace FamilyBudgetApi.Services
                 }
             }
 
-            // Update the specified fields
             if (matched.HasValue)
             {
                 updatedTransaction.Matched = matched.Value;
@@ -292,7 +480,6 @@ namespace FamilyBudgetApi.Services
             var budget = await GetBudget(budgetId) ?? throw new Exception($"Budget {budgetId} not found");
             var importedDocs = await GetImportedTransactions(userId);
 
-            // Index imported transactions for O(1) lookup
             var importedTxIndex = new Dictionary<string, (ImportedTransactionDoc doc, int index)>();
             foreach (var doc in importedDocs)
             {
@@ -330,9 +517,8 @@ namespace FamilyBudgetApi.Services
                     if (!updatedDocs.ContainsKey(docId)) updatedDocs[docId] = targetEntry.doc;
 
                     var transactions = updatedDocs[docId].importedTransactions.ToList();
-                    var importedTx = transactions[targetEntry.index]; // Single declaration
+                    var importedTx = transactions[targetEntry.index];
 
-                    // Update budget transaction fields if matching
                     if (req.Match)
                     {
                         foreach (var importedProp in ImportedTransactionProperties)
@@ -352,19 +538,16 @@ namespace FamilyBudgetApi.Services
                         budgetTx.Status = "C";
                     }
 
-                    // Update imported transaction
                     if (req.Match) importedTx.Matched = true;
                     if (req.Ignore) importedTx.Ignored = true;
 
                     transactions[targetEntry.index] = importedTx;
                     updatedDocs[docId].importedTransactions = transactions.ToArray();
-                    batch.Set(_firestoreDb.Collection("importedTransactions").Document(docId), 
-                        new { importedTransactions = transactions }, 
-                        SetOptions.MergeAll);
+                    batch.Set(_firestoreDb.Collection("importedTransactions").Document(docId),
+                        new { importedTransactions = transactions }, SetOptions.MergeAll);
                 }
             }
 
-            // Update only the modified transactions in the budget
             var budgetRef = _firestoreDb.Collection("budgets").Document(budgetId);
             var budgetUpdate = new Dictionary<string, object>
             {
@@ -376,7 +559,5 @@ namespace FamilyBudgetApi.Services
 
             Console.WriteLine($"Batch reconcile completed in {(DateTime.UtcNow - startTime).TotalMilliseconds}ms");
         }
-
     }
-
 }

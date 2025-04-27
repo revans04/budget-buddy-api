@@ -8,8 +8,12 @@ namespace FamilyBudgetApi.Models
     {
         [FirestoreProperty("uid")]
         public string? Uid { get; set; }
+
         [FirestoreProperty("email")]
         public string? Email { get; set; }
+        
+        [FirestoreProperty("role")]
+        public string? Role { get; set; }
     }
 
     [FirestoreData]

@@ -1,4 +1,3 @@
-// FamilyBudgetApi/Models/Family.cs
 using Google.Cloud.Firestore;
 using System.Collections.Generic;
 
@@ -12,7 +11,7 @@ namespace FamilyBudgetApi.Models
 
         [FirestoreProperty("name")]
         public required string Name { get; set; }
-        
+
         [FirestoreProperty("ownerUid")]
         public required string OwnerUid { get; set; }
 
@@ -22,18 +21,20 @@ namespace FamilyBudgetApi.Models
         [FirestoreProperty("memberUids")]
         public List<string> MemberUids { get; set; } = new();
 
-        [FirestoreProperty]
-        public List<Account> Accounts { get; set; }
+        [FirestoreProperty("accounts")]
+        public List<Account> Accounts { get; set; } = new();
 
-        [FirestoreProperty]
-        public List<Snapshot> Snapshots { get; set; }
+        [FirestoreProperty("snapshots")]
+        public List<Snapshot> Snapshots { get; set; } = new();
+
+        [FirestoreProperty("entities")]
+        public List<Entity> Entities { get; set; } = new();
 
         [FirestoreProperty("createdAt")]
         public Timestamp CreatedAt { get; set; }
 
         [FirestoreProperty("updatedAt")]
         public Timestamp UpdatedAt { get; set; }
-
     }
 
     public class CreateFamilyRequest
@@ -41,4 +42,5 @@ namespace FamilyBudgetApi.Models
         public required string Name { get; set; }
         public required string Email { get; set; }
     }
+
 }
