@@ -243,6 +243,23 @@ namespace FamilyBudgetApi.Controllers
             }
         }
 
+        [HttpDelete("imported-transactions/{id}")]
+        [AuthorizeFirebase]
+        public async Task<IActionResult> DeleteImportedTransactionDoc(string id)
+        {
+            try
+            {
+                var userId = HttpContext.Items["UserId"]?.ToString() ?? throw new Exception("User ID not found");
+                await _budgetService.DeleteImportedTransactionDoc(id);
+                return Ok();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in GetImportedTransactionsByAccountId: {ex.Message}");
+                return BadRequest(ex.Message);
+            }
+        }
+
         [HttpGet("imported-transactions/by-account/{accountId}")]
         [AuthorizeFirebase]
         public async Task<IActionResult> GetImportedTransactionsByAccountId(string accountId)

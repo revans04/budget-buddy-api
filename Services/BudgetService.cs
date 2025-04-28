@@ -287,6 +287,15 @@ namespace FamilyBudgetApi.Services
             Console.WriteLine($"Batch updated {transactions.Count} imported transactions");
         }
 
+        public async Task DeleteImportedTransactionDoc(string id)
+        {
+            var itdRef = _firestoreDb.Collection("importedTransactions").Document(id);
+            var itdSnap = await itdRef.GetSnapshotAsync();
+            if (!itdSnap.Exists) throw new Exception("Imported Transaction Doc not found");
+
+            await itdRef.DeleteAsync();
+        }
+
         public async Task<List<TransactionWithBudgetId>> GetBudgetTransactionsMatchedToImported(string accountId, string userId)
         {
             Console.WriteLine($"Fetching budget transactions matched to imported for account {accountId} and user {userId}");
@@ -374,7 +383,7 @@ namespace FamilyBudgetApi.Services
             }
             Console.WriteLine($"Batch updated {transactions.Count} budget transactions");
         }
-        
+
         public async Task<bool> CanAccessBudget(Budget budget, string userId)
         {
             Console.WriteLine($"Checking if user {userId} can access budget {budget.BudgetId}");
