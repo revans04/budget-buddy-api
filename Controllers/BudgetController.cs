@@ -102,6 +102,24 @@ namespace FamilyBudgetApi.Controllers
             }
         }
 
+        [HttpDelete("{budgetId}")]
+        [AuthorizeFirebase]
+        public async Task<IActionResult> DeleteBudget(string budgetId)
+        {
+            try
+            {
+                var userId = HttpContext.Items["UserId"]?.ToString() ?? throw new Exception("User ID not found");
+                var userEmail = (await FirebaseAuth.DefaultInstance.GetUserAsync(userId)).Email;
+                await _budgetService.DeleteBudget(budgetId, userId, userEmail);
+                return Ok();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in DeleteBudget: {ex.Message}");
+                return BadRequest(ex.Message);
+            }
+        }
+
         [HttpGet("{budgetId}/edit-history")]
         [AuthorizeFirebase]
         public async Task<IActionResult> GetEditHistory(string budgetId)
@@ -215,7 +233,7 @@ namespace FamilyBudgetApi.Controllers
         {
             try
             {
-                await _budgetService.UpdateImportedTransaction(docId, transactionId, request.Matched, request.Ignored);
+                await _budgetService.UpdateImportedTransaction(docId, transactionId, request.Matched, request.Ignored, request.Deleted);
                 Console.WriteLine($"Updated ImportedTransactionDoc {docId} for tx {transactionId}");
                 return Ok();
             }
@@ -255,7 +273,7 @@ namespace FamilyBudgetApi.Controllers
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error in GetImportedTransactionsByAccountId: {ex.Message}");
+                Console.WriteLine($"Error in DeleteImportedTransactionDoc: {ex.Message}");
                 return BadRequest(ex.Message);
             }
         }
@@ -354,5 +372,6 @@ namespace FamilyBudgetApi.Controllers
     {
         public bool? Matched { get; set; }
         public bool? Ignored { get; set; }
+        public bool? Deleted { get; set; }
     }
 }

@@ -65,6 +65,45 @@ namespace FamilyBudgetApi.Services
             }
         }
 
+        public async Task DeleteBudget(string budgetId, string userId, string userEmail)
+        {
+            var budgetRef = _firestoreDb.Collection("budgets").Document(budgetId);
+            var budgetSnap = await budgetRef.GetSnapshotAsync();
+            if (!budgetSnap.Exists)
+            {
+                throw new Exception($"Budget {budgetId} not found");
+            }
+
+            var budget = budgetSnap.ConvertTo<Budget>();
+            if (!await CanAccessBudget(budget, userId))
+            {
+                throw new Exception($"User {userId} is not authorized to delete budget {budgetId}");
+            }
+
+            // Check if the user is the entity owner or an admin
+            var family = await _familyService.GetUserFamily(userId);
+            if (family == null)
+            {
+                throw new Exception($"Family not found for user {userId}");
+            }
+            var entity = family.Entities?.FirstOrDefault(e => e.Id == budget.EntityId);
+            if (entity == null)
+            {
+                throw new Exception($"Entity {budget.EntityId} not found for budget {budgetId}");
+            }
+            if (!entity.Members.Any(m => m.Uid == userId && m.Role == "Admin"))
+            {
+                throw new Exception($"User {userId} does not have permission to delete budget {budgetId}");
+            }
+
+            // Delete the budget
+            await budgetRef.DeleteAsync();
+
+            // Log the deletion event
+            await LogEditEvent(budgetId, userId, userEmail, "delete_budget");
+
+        }
+
         public async Task<List<SharedBudget>> GetSharedBudgets(string userId)
         {
             var q = _firestoreDb.Collection("sharedBudgets").WhereEqualTo("userId", userId);
@@ -238,6 +277,15 @@ namespace FamilyBudgetApi.Services
                 .ToList();
         }
 
+        public async Task DeleteImportedTransactionDoc(string id)
+        {
+            var itdRef = _firestoreDb.Collection("importedTransactions").Document(id);
+            var itdSnap = await itdRef.GetSnapshotAsync();
+            if (!itdSnap.Exists) throw new Exception("Imported Transaction Doc not found");
+
+            await itdRef.DeleteAsync();
+        }
+
         public async Task<List<ImportedTransaction>> GetImportedTransactionsByAccountId(string accountId)
         {
             Console.WriteLine($"Fetching imported transactions for account {accountId}");
@@ -285,15 +333,6 @@ namespace FamilyBudgetApi.Services
                 await docRef.SetAsync(importedDoc, SetOptions.MergeAll);
             }
             Console.WriteLine($"Batch updated {transactions.Count} imported transactions");
-        }
-
-        public async Task DeleteImportedTransactionDoc(string id)
-        {
-            var itdRef = _firestoreDb.Collection("importedTransactions").Document(id);
-            var itdSnap = await itdRef.GetSnapshotAsync();
-            if (!itdSnap.Exists) throw new Exception("Imported Transaction Doc not found");
-
-            await itdRef.DeleteAsync();
         }
 
         public async Task<List<TransactionWithBudgetId>> GetBudgetTransactionsMatchedToImported(string accountId, string userId)
@@ -418,7 +457,7 @@ namespace FamilyBudgetApi.Services
             return canAccess;
         }
 
-        public async Task UpdateImportedTransaction(string docId, string transactionId, bool? matched = null, bool? ignored = null)
+        public async Task UpdateImportedTransaction(string docId, string transactionId, bool? matched = null, bool? ignored = null, bool? deleted = null)
         {
             var docRef = _firestoreDb.Collection("importedTransactions").Document(docId);
             var snapshot = await docRef.GetSnapshotAsync();
@@ -448,6 +487,10 @@ namespace FamilyBudgetApi.Services
             if (ignored.HasValue)
             {
                 updatedTransaction.Ignored = ignored.Value;
+            }
+            if (deleted.HasValue)
+            {
+                updatedTransaction.Deleted = deleted.Value;
             }
 
             transactions[index] = updatedTransaction;
