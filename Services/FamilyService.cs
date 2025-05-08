@@ -98,19 +98,48 @@ namespace FamilyBudgetApi.Services
                     throw new Exception($"Member {member.Uid} is not part of family {familyId}");
             }
 
+            // Merge the incoming entity with the existing entity
+            var updatedEntity = MergeEntities(existingEntity, entity);
+
+            // Update the entities array by replacing the matching entity
+            var updatedEntities = family.Entities
+                .Select(e => e.Id == entity.Id ? updatedEntity : e)
+                .ToList();
+
             await _db.RunTransactionAsync(async transaction =>
             {
                 transaction.Update(familyRef, new Dictionary<string, object>
                 {
-                    { "entities", FieldValue.ArrayRemove(existingEntity) },
-                    { "updatedAt", Timestamp.FromDateTime(DateTime.UtcNow) }
-                });
-                transaction.Update(familyRef, new Dictionary<string, object>
-                {
-                    { "entities", FieldValue.ArrayUnion(entity) },
-                    { "updatedAt", Timestamp.FromDateTime(DateTime.UtcNow) }
+            { "entities", updatedEntities },
+            { "updatedAt", Timestamp.FromDateTime(DateTime.UtcNow) }
                 });
             });
+        }
+
+        private Entity MergeEntities(Entity existing, Entity incoming)
+        {
+            var updated = new Entity();
+            var properties = typeof(Entity).GetProperties();
+
+            foreach (var prop in properties)
+            {
+                var incomingValue = prop.GetValue(incoming);
+                var existingValue = prop.GetValue(existing);
+
+                // Use incoming value if not null, otherwise existing value
+                prop.SetValue(updated, incomingValue ?? existingValue);
+            }
+
+            // Ensure critical fields are preserved or set
+            updated.Id = existing.Id;
+
+            // Handle TemplateBudget defaults
+            if (updated.TemplateBudget != null)
+            {
+                updated.TemplateBudget.Categories ??= new List<BudgetCategory>();
+            }
+
+            return updated;
         }
 
         public async Task DeleteEntity(string familyId, string entityId)

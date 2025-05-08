@@ -168,4 +168,11 @@ namespace FamilyBudgetApi.Models
         public string BudgetId { get; set; }
         public List<ReconcileRequest> Reconciliations { get; set; }
     }
+
+    [FirestoreData]
+    public class TemplateBudget
+    {
+        [FirestoreProperty("categories")]
+        public List<BudgetCategory> Categories { get; set; } = new();
+    }
 }

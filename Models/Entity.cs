@@ -18,5 +18,8 @@ namespace FamilyBudgetApi.Models
 
     [FirestoreProperty("members")]
     public List<UserRef> Members { get; set; } = new();
+
+    [FirestoreProperty("templateBudget")]
+    public TemplateBudget? TemplateBudget { get; set; } = new();
   }
 }

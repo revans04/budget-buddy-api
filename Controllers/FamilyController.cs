@@ -152,7 +152,7 @@ namespace FamilyBudgetApi.Controllers
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error in UpdateEntity: {ex.Message}");
+                Console.WriteLine($"Error in UpdateEntity: {ex.Message} {ex.StackTrace}");
                 return BadRequest(new { Error = ex.Message });
             }
         }
