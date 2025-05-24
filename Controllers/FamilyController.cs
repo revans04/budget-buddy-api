@@ -114,6 +114,30 @@ namespace FamilyBudgetApi.Controllers
             }
         }
 
+        [HttpPut("{familyId}/rename")]
+        [AuthorizeFirebase]
+        public async Task<IActionResult> RenameFamily(string familyId, [FromBody] RenameFamilyRequest request)
+        {
+            var uid = HttpContext.Items["UserId"]?.ToString();
+            if (string.IsNullOrEmpty(request.Name))
+                return BadRequest(new { Error = "Family name is required" });
+
+            var family = await _familyService.GetFamilyById(familyId);
+            if (family == null || family.OwnerUid != uid)
+                return Unauthorized("Only the family owner can rename the family");
+
+            try
+            {
+                await _familyService.RenameFamily(familyId, request.Name);
+                return Ok(new { Message = "Family renamed successfully", Name = request.Name });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in RenameFamily: {ex.Message}");
+                return StatusCode(500, new { Error = $"Failed to rename family: {ex.Message}" });
+            }
+        }
+
         [HttpPost("{familyId}/entities")]
         [AuthorizeFirebase]
         public async Task<IActionResult> CreateEntity(string familyId, [FromBody] Entity entity)
@@ -123,8 +147,14 @@ namespace FamilyBudgetApi.Controllers
             if (family == null || family.OwnerUid != uid)
                 return Unauthorized("Only the family owner can create entities");
 
+            // Validate EntityType
+            if (!Enum.TryParse<EntityType>(entity.Type, true, out _))
+                return BadRequest(new { Error = $"Invalid entity type: {entity.Type}. Must be one of: {string.Join(", ", Enum.GetNames(typeof(EntityType)))}" });
+
             try
             {
+                entity.CreatedAt = Timestamp.FromDateTime(DateTime.UtcNow);
+                entity.UpdatedAt = Timestamp.FromDateTime(DateTime.UtcNow);
                 await _familyService.CreateEntity(familyId, entity);
                 return Ok(new { EntityId = entity.Id });
             }
@@ -144,7 +174,12 @@ namespace FamilyBudgetApi.Controllers
             if (family == null || family.OwnerUid != uid)
                 return Unauthorized("Only the family owner can update entities");
 
+            // Validate EntityType
+            if (!Enum.TryParse<EntityType>(entity.Type, true, out _))
+                return BadRequest(new { Error = $"Invalid entity type: {entity.Type}. Must be one of: {string.Join(", ", Enum.GetNames(typeof(EntityType)))}" });
+
             entity.Id = entityId;
+            entity.UpdatedAt = Timestamp.FromDateTime(DateTime.UtcNow);
             try
             {
                 await _familyService.UpdateEntity(familyId, entity);
@@ -321,6 +356,11 @@ namespace FamilyBudgetApi.Controllers
                 Console.WriteLine($"Error in GetLastAccessed: {ex.Message}");
                 return StatusCode(500, new { Error = $"Failed to get last accessed: {ex.Message}" });
             }
+        }
+
+        public class RenameFamilyRequest
+        {
+            public string Name { get; set; }
         }
     }
 }

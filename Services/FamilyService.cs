@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Reflection;
 
 namespace FamilyBudgetApi.Services
 {
@@ -63,6 +64,20 @@ namespace FamilyBudgetApi.Services
             }
         }
 
+        public async Task RenameFamily(string familyId, string newName)
+        {
+            var familyRef = _db.Collection("families").Document(familyId);
+            var family = await GetFamilyById(familyId);
+            if (family == null)
+                throw new Exception($"Family {familyId} not found");
+
+            await familyRef.UpdateAsync(new Dictionary<string, object>
+            {
+                { "name", newName },
+                { "updatedAt", Timestamp.FromDateTime(DateTime.UtcNow) }
+            });
+        }
+
         public async Task CreateEntity(string familyId, Entity entity)
         {
             var familyRef = _db.Collection("families").Document(familyId);
@@ -75,6 +90,10 @@ namespace FamilyBudgetApi.Services
                 if (!family.MemberUids.Contains(member.Uid))
                     throw new Exception($"Member {member.Uid} is not part of family {familyId}");
             }
+
+            // Validate EntityType
+            if (!Enum.TryParse<EntityType>(entity.Type, true, out _))
+                throw new Exception($"Invalid entity type: {entity.Type}. Must be one of: {string.Join(", ", Enum.GetNames(typeof(EntityType)))}");
 
             await familyRef.UpdateAsync(new Dictionary<string, object>
             {
@@ -90,36 +109,47 @@ namespace FamilyBudgetApi.Services
             if (family == null) throw new Exception($"Family {familyId} not found");
 
             var existingEntity = family.Entities.FirstOrDefault(e => e.Id == entity.Id);
-            if (existingEntity == null) throw new Exception($"Entity {entity.Id} not found");
-
-            foreach (var member in entity.Members)
+            if (existingEntity == null)
             {
-                if (!family.MemberUids.Contains(member.Uid))
-                    throw new Exception($"Member {member.Uid} is not part of family {familyId}");
+                await this.CreateEntity(familyId, entity);
+            }
+            else
+            {
+                foreach (var member in entity.Members)
+                {
+                    if (!family.MemberUids.Contains(member.Uid))
+                        throw new Exception($"Member {member.Uid} is not part of family {familyId}");
+                }
+
+                // Validate EntityType
+                if (!Enum.TryParse<EntityType>(entity.Type, true, out _))
+                    throw new Exception($"Invalid entity type: {entity.Type}. Must be one of: {string.Join(", ", Enum.GetNames(typeof(EntityType)))}");
+
+                // Merge the incoming entity with the existing entity
+                var updatedEntity = MergeEntities(existingEntity, entity);
+
+                // Update the entities array by replacing the matching entity
+                var updatedEntities = family.Entities
+                    .Select(e => e.Id == entity.Id ? updatedEntity : e)
+                    .ToList();
+
+                await _db.RunTransactionAsync(async transaction =>
+                {
+                    transaction.Update(familyRef, new Dictionary<string, object>
+                    {
+                        { "entities", updatedEntities },
+                        { "updatedAt", Timestamp.FromDateTime(DateTime.UtcNow) }
+                    });
+                });
             }
 
-            // Merge the incoming entity with the existing entity
-            var updatedEntity = MergeEntities(existingEntity, entity);
-
-            // Update the entities array by replacing the matching entity
-            var updatedEntities = family.Entities
-                .Select(e => e.Id == entity.Id ? updatedEntity : e)
-                .ToList();
-
-            await _db.RunTransactionAsync(async transaction =>
-            {
-                transaction.Update(familyRef, new Dictionary<string, object>
-                {
-            { "entities", updatedEntities },
-            { "updatedAt", Timestamp.FromDateTime(DateTime.UtcNow) }
-                });
-            });
         }
 
         private Entity MergeEntities(Entity existing, Entity incoming)
         {
             var updated = new Entity();
-            var properties = typeof(Entity).GetProperties();
+            var properties = typeof(Entity).GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .Where(p => p.GetCustomAttribute<FirestorePropertyAttribute>() != null); // Only include Firestore properties
 
             foreach (var prop in properties)
             {
@@ -127,13 +157,33 @@ namespace FamilyBudgetApi.Services
                 var existingValue = prop.GetValue(existing);
 
                 // Use incoming value if not null, otherwise existing value
-                prop.SetValue(updated, incomingValue ?? existingValue);
+                var valueToSet = incomingValue ?? existingValue;
+
+                // Special handling for collections to avoid null or empty overwrites
+                if (valueToSet != null && prop.PropertyType.IsGenericType &&
+                    prop.PropertyType.GetGenericTypeDefinition() == typeof(List<>))
+                {
+                    // Only overwrite if the incoming collection is non-empty
+                    if (incomingValue != null && ((System.Collections.IList)incomingValue).Count > 0)
+                    {
+                        prop.SetValue(updated, incomingValue);
+                    }
+                    else
+                    {
+                        prop.SetValue(updated, existingValue);
+                    }
+                }
+                else
+                {
+                    prop.SetValue(updated, valueToSet);
+                }
             }
 
             // Ensure critical fields are preserved or set
-            updated.Id = existing.Id;
+            updated.Id = existing.Id; // Always preserve the original ID
+            updated.CreatedAt = existing.CreatedAt; // Preserve original creation time
 
-            // Handle TemplateBudget defaults
+            // Ensure TemplateBudget defaults
             if (updated.TemplateBudget != null)
             {
                 updated.TemplateBudget.Categories ??= new List<BudgetCategory>();
